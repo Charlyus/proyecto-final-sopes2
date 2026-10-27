@@ -149,6 +149,18 @@ public final class GestorRecursos {
         } finally { lock.unlock(); }
     }
 
+    public boolean esperarTodoLibre(long timeout,TimeUnit unit) throws InterruptedException {
+        long remaining=unit.toNanos(timeout); lock.lockInterruptibly();
+        try {
+            while(remaining>0) {
+                boolean free=leases.isEmpty()&&waiting.isEmpty()&&pools.values().stream().allMatch(p->p.disponibles==p.capacidad);
+                if(free) return true;
+                remaining=changed.awaitNanos(remaining);
+            }
+            return leases.isEmpty()&&waiting.isEmpty()&&pools.values().stream().allMatch(p->p.disponibles==p.capacidad);
+        } finally { lock.unlock(); }
+    }
+
     private static List<String> findCycle(Map<String, SolicitudEnEspera> waits) {
         for (String start : waits.keySet()) {
             List<String> path = new ArrayList<>(); Set<String> visiting = new HashSet<>();

@@ -220,10 +220,73 @@ la pausa, nuevas recepciones se rechazan explícitamente. La demostración solo
 comienza con recursos libres, sin pedidos despachados y con el generador
 detenido.
 
+## Comparación controlada de planificación
+
+Desde el menú **Comparación**, elige **Competencia media (15 pedidos)** o
+**Competencia alta (20 pedidos)**, una semilla y un límite por política; luego
+pulsa **Ejecutar comparación**. La tabla muestra el estado de cada ejecución,
+los cinco conteos de pedidos, las métricas y un gráfico de espera media. Al
+seleccionar una política se ven sus esperas por nivel de servicio y la
+utilización de cada recurso. **Cancelar** detiene nuevas llegadas y cierra la
+ejecución actual antes de marcarla cancelada. Un timeout se muestra como
+**Límite agotado**: conserva los conteos observados, pero no presenta tiempos
+parciales como métricas completas.
+
+Cada política usa una instancia nueva de Motor, GestorRecursos, Inventario,
+Recepción y Almacén, y se ejecuta secuencialmente. La preparación del stock se
+completa y verifica antes del inicio medido. Las tres instancias reciben los
+mismos pedidos programados, IDs lógicos, servicios, cantidades y llegadas
+relativas; también comparten trabajadores, recursos y duración por unidad. El
+motor interactivo del usuario no se modifica.
+
+La configuración inicial es:
+
+- Semilla predeterminada: `42` (editable).
+- 15 o 20 pedidos, con los cinco servicios distribuidos de forma balanceada y
+  barajada por la semilla; 1–3 unidades por pedido y los cinco tipos de
+  mercancía. Los IDs lógicos `CMP-001`…`CMP-020` son estables.
+- Llegadas cada `5 ms`, contados desde el comienzo de cada ejecución; `2`
+  trabajadores; `20 ms reales` de trabajo por unidad; envejecimiento cada
+  `80 ms reales`; límite predeterminado `15 000 ms` por política (editable de
+  100 a 120 000 ms).
+- Capacidades comunes: 6 empaques, 2 áreas de carga, 10 encargados, 3
+  montacargas, 4 estaciones de calidad y 1 escáner.
+- Cinco ubicaciones de `100` unidades de volumen. El stock inicial es la suma
+  exacta de las necesidades del escenario; se almacena explícitamente antes
+  de medir. Por producto no supera el espacio de una ubicación, y el escenario
+  valida la capacidad con la misma regla de almacén que usa la aplicación.
+  No hay falta de stock ni reposición silenciosa.
+
+Las unidades de `TiempoSimulado` coinciden aquí con tiempo real de espera del
+hilo: no hay aceleración de reloj ni conversión a minutos simulados. Las
+mediciones usan `System.nanoTime()` y se muestran en milisegundos reales,
+pedidos por segundo o porcentaje:
+
+- Espera por pedido: `inicio efectivo − llegada`; media y máximo solo usan
+  pedidos con inicio registrado. La tabla secundaria promedia la misma medida
+  por nivel de servicio.
+- Procesamiento: `finalización − inicio efectivo`; la media usa pedidos que
+  terminaron.
+- Llegada a fin: `finalización − llegada`; media de pedidos completados.
+- Duración total: inicio de la reproducción hasta la última finalización.
+- Rendimiento: pedidos completados / duración total en segundos.
+- Utilización del recurso: nanosegundos de permisos ocupados / (capacidad ×
+  ventana observada). La ventana empieza justo antes de reproducir las
+  llegadas y termina al comprobar recursos liberados.
+
+Si una medida no tiene muestras, se presenta como `—`, no como cero. Exprés
+conserva “casi inmediato” como objetivo cualitativo; esta comparación no fija
+un umbral numérico. La prioridad estricta privilegia niveles altos, el
+envejecimiento puede mejorar la atención de los pedidos que esperan y menor
+trabajo primero favorece tareas cortas. El escenario permite observar esos
+compromisos, pero no demuestra que una política sea siempre mejor. La misma
+semilla conserva las entradas; la planificación del sistema operativo y la
+contención pueden variar los tiempos medidos entre repeticiones.
+
 ## Limitaciones actuales
 
 Todo el estado desaparece al cerrar el proceso. No se implementan persistencia,
-generación automática de stock, comparación de ejecuciones entre políticas ni manuales finales. El catálogo es
+generación automática de stock ni manuales finales. El catálogo es
 fijo y solo se pueden seleccionar sus productos. Los pedidos automáticos
 pueden crecer sin límite de negocio, pero están condicionados por el tiempo y
 la memoria disponibles en la máquina.

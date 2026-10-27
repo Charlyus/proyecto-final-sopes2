@@ -282,6 +282,28 @@ public final class MotorSimulacion implements AutoCloseable {
         } finally { lock.unlock(); }
     }
 
+    /** Espera estados terminales de IDs concretos; una cola vacía no implica finalización. */
+    public boolean esperarPedidosTerminales(Collection<UUID> ids, long timeout, TimeUnit unit) throws InterruptedException {
+        Objects.requireNonNull(ids);
+        Set<UUID> expected=Set.copyOf(ids);
+        long remaining=unit.toNanos(timeout);
+        lock.lockInterruptibly();
+        try {
+            while (remaining>0) {
+                boolean terminal=expected.stream().allMatch(id -> {
+                    RuntimeOrder order=orders.get(id);
+                    return order!=null && (order.state==EstadoPedido.FINALIZADO || order.state==EstadoPedido.CANCELADO);
+                });
+                if(terminal) return true;
+                remaining=changed.awaitNanos(remaining);
+            }
+            return expected.stream().allMatch(id -> {
+                RuntimeOrder order=orders.get(id);
+                return order!=null && (order.state==EstadoPedido.FINALIZADO || order.state==EstadoPedido.CANCELADO);
+            });
+        } finally { lock.unlock(); }
+    }
+
     public SnapshotMotor snapshot() {
         long now = System.nanoTime();
         lock.lock();
@@ -294,7 +316,7 @@ public final class MotorSimulacion implements AutoCloseable {
                     long elapsed = now - o.started; progress = Math.min(1.0, (double)elapsed/total);
                     remaining = TimeUnit.NANOSECONDS.toMillis(Math.max(0, total-elapsed));
                 }
-                return new EstadoPedidoMotor(o.pedido, o.state, o.arrival, o.started, o.finished, progress, remaining, o.origen);
+                return new EstadoPedidoMotor(o.pedido, o.state, o.arrival, o.started, o.finished, progress, remaining, o.origen, o.error);
             }).toList();
             Map<TipoRecurso, GestorRecursos.EstadoRecurso> resources = resourceManager.snapshot();
             EnumMap<TipoRecurso,Double> utilization = new EnumMap<>(TipoRecurso.class);
