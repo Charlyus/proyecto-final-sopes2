@@ -12,7 +12,7 @@ public record EscenarioComparacion(Perfil perfil, long semilla, List<PedidoProgr
                                    Map<String,Integer> stockInicial, List<Integer> capacidadesUbicaciones,
                                    int trabajadores, long milisegundosPorUnidad,
                                    long intervaloLlegadasMillis, long intervaloEnvejecimientoMillis,
-                                   long limiteEjecucionMillis) {
+                                   long limiteEjecucionMillis, double escalaTiempo) {
     public record Perfil(String nombre, int cantidadPedidos) {
         public Perfil {
             Objects.requireNonNull(nombre);
@@ -45,7 +45,9 @@ public record EscenarioComparacion(Perfil perfil, long semilla, List<PedidoProgr
         capacidadesUbicaciones=List.copyOf(capacidadesUbicaciones);
         if(pedidos.size()!=perfil.cantidadPedidos()) throw new IllegalArgumentException("cantidad de pedidos no coincide con el perfil");
         if(trabajadores<=0||milisegundosPorUnidad<=0||intervaloLlegadasMillis<=0
-                ||intervaloEnvejecimientoMillis<=0||limiteEjecucionMillis<=0) throw new IllegalArgumentException("configuración de ejecución inválida");
+                ||intervaloEnvejecimientoMillis<=0||limiteEjecucionMillis<=0
+                ||!Double.isFinite(escalaTiempo)||escalaTiempo<0.01||escalaTiempo>1000)
+            throw new IllegalArgumentException("configuración de ejecución inválida");
         Almacen warehouse=new Almacen(capacidadesUbicaciones);
         Map<String,Integer> computed=new TreeMap<>();
         for(PedidoProgramado order:pedidos) computed.merge(order.productoId(),order.cantidad(),Math::addExact);
@@ -74,7 +76,7 @@ public record EscenarioComparacion(Perfil perfil, long semilla, List<PedidoProgr
         }
         return new EscenarioComparacion(perfil,semilla,orders,stock,UBICACIONES,TRABAJADORES,
                 MILISEGUNDOS_POR_UNIDAD,INTERVALO_LLEGADAS_MILLIS,INTERVALO_ENVEJECIMIENTO_MILLIS,
-                LIMITE_POR_POLITICA_MILLIS);
+                LIMITE_POR_POLITICA_MILLIS,gt.redxela.concurrencia.EscalaTiempoSimulado.configurada().factor());
     }
 
     public long volumenStockInicial() {
@@ -85,10 +87,10 @@ public record EscenarioComparacion(Perfil perfil, long semilla, List<PedidoProgr
     public String fingerprint() {
         return semilla+"|"+perfil.cantidadPedidos()+"|"+pedidos+"|"+new TreeMap<>(stockInicial)+"|"+
                 capacidadesUbicaciones+"|"+trabajadores+"|"+milisegundosPorUnidad+"|"+
-                intervaloLlegadasMillis+"|"+intervaloEnvejecimientoMillis+"|"+limiteEjecucionMillis;
+                intervaloLlegadasMillis+"|"+intervaloEnvejecimientoMillis+"|"+limiteEjecucionMillis+"|"+escalaTiempo;
     }
     public EscenarioComparacion conLimiteEjecucion(long millis) {
         return new EscenarioComparacion(perfil,semilla,pedidos,stockInicial,capacidadesUbicaciones,trabajadores,
-                milisegundosPorUnidad,intervaloLlegadasMillis,intervaloEnvejecimientoMillis,millis);
+                milisegundosPorUnidad,intervaloLlegadasMillis,intervaloEnvejecimientoMillis,millis,escalaTiempo);
     }
 }

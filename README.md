@@ -1,6 +1,6 @@
 # REDXela
 
-Proyecto universitario de Sistemas Operativos 2. Java 17, Maven, JavaFX 17,
+Proyecto de Sistemas Operativos 2. Java 17, Maven, JavaFX 17,
 FXML, CSS, JUnit 5 y estado en memoria.
 
 ## Compilar, verificar y ejecutar
@@ -58,6 +58,16 @@ mantener accesibles los formularios y tablas en ventanas menores. El panel
 general incluye indicadores, medias de espera y procesamiento y barras de
 ocupación actual por recurso; Almacén muestra también su utilización acumulada.
 Las tablas de pedidos presentan progreso y estados coloreados con texto.
+
+En el detalle seleccionado del pedido se muestran el objetivo del servicio,
+tiempo de espera simulado y el resultado **Dentro del objetivo** o **Objetivo
+excedido**, capturado al iniciar preparación. La espera se mide desde la
+aceptación del pedido por el motor hasta el inicio efectivo, e incluye falta de
+stock y espera de recursos. Prioritario, Estándar, Programado y Económico usan
+10, 30, 60 y 120 minutos simulados; Exprés conserva «casi inmediato» cualitativo,
+sin umbral numérico. Son objetivos, no garantías ante cualquier carga o stock.
+La cola de planificación muestra servicio, unidades, espera y el criterio
+efectivo usado para ordenarla.
 
 ## Generador automático
 
@@ -167,7 +177,27 @@ una prueba lo compara con el mismo reloj simulado. Menor trabajo primero ordena
 por la suma de unidades de sus líneas y luego por llegada.
 
 El trabajo simulado dura `unidades_totales × milisegundos_por_unidad` (250 ms por
-unidad en la demostración) y usa `System.nanoTime()` para medir duración.
+unidad en la demostración) y usa `System.nanoTime()` para medir duración real.
+
+La escala central de reloj (`EscalaTiempoSimulado`) es `1:1` por defecto. Se
+configura por proceso mediante `REDXELA_ESCALA_TIEMPO` o la propiedad Java
+`redxela.escalaTiempo`, con un factor entre `0.01` y `1000`; por ejemplo:
+
+```bash
+REDXELA_ESCALA_TIEMPO=60 mvn javafx:run
+```
+
+Cada motor fija el factor al crearse y lo mantiene durante su ejecución. El
+reloj transforma transcurrido monotónico: `simulado = real × factor`. El factor
+afecta envejecimiento y objetivos de espera; no cambia milisegundos reales de
+trabajo por unidad. Comparación captura el mismo factor en su escenario, pero
+sus duraciones, esperas, timeout y utilización siguen medidos en tiempo real y
+se etiquetan así.
+
+La comparación usa una llegada inicial por intervalo de 5 ms reales; su
+envejecimiento es cada 80 ms **simulados**, no necesariamente 80 ms de pared
+cuando el factor difiere de 1. El límite de ejecución por política continúa en
+milisegundos reales.
 
 El registro de clientes usa un `ReentrantReadWriteLock`; cada cuenta tiene ID
 UUID, nombre, correo y servicio por defecto. Una cuenta no contiene contraseña
@@ -247,7 +277,7 @@ La configuración inicial es:
   mercancía. Los IDs lógicos `CMP-001`…`CMP-020` son estables.
 - Llegadas cada `5 ms`, contados desde el comienzo de cada ejecución; `2`
   trabajadores; `20 ms reales` de trabajo por unidad; envejecimiento cada
-  `80 ms reales`; límite predeterminado `15 000 ms` por política (editable de
+  `80 ms simulados`; límite predeterminado `15 000 ms reales` por política (editable de
   100 a 120 000 ms).
 - Capacidades comunes: 6 empaques, 2 áreas de carga, 10 encargados, 3
   montacargas, 4 estaciones de calidad y 1 escáner.
@@ -296,3 +326,15 @@ valor numérico de control cuyo tipo real es `Double` al wrapper `Long` (no son
 tipos compatibles por cast). Los nuevos campos aceptan texto y convierten con
 `Integer.parseInt` o `Long.parseLong`, validando que cantidades sean enteras y
 estén dentro del rango antes de enviar comandos.
+
+## Auditoría contra el enunciado
+
+La matriz requisito por requisito y la evidencia están en
+[`docs/REVISION_REQUISITOS.md`](docs/REVISION_REQUISITOS.md). El recorrido
+reproducible de validación manual, todavía pendiente de ejecución, está en
+[`docs/PRUEBAS_MANUALES.md`](docs/PRUEBAS_MANUALES.md). La última verificación
+automatizada terminó con `mvn clean verify`: 49 pruebas pasaron; también pasó
+`git diff --check`. La interfaz no se abrió visualmente en esta revisión, por
+lo que el ajuste a 1366×768 y ventanas menores aún requiere comprobación humana.
+Los objetivos de servicio son esperas objetivo, no garantías ante cualquier
+carga, stock o contención.

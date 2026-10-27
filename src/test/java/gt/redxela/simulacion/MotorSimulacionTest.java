@@ -94,6 +94,8 @@ class MotorSimulacionTest {
             assertTrue(motor.esperarEstado(valid.id(),EstadoPedido.ESPERANDO_STOCK,1,TimeUnit.SECONDS));
             assertEquals(1,motor.snapshot().pedidos().size());
             assertEquals(1,motor.snapshot().estadisticas().esperandoStock());
+            assertNull(motor.snapshot().estadisticas().esperaPromedioMillis());
+            assertNull(motor.snapshot().estadisticas().procesamientoPromedioMillis());
         } finally { motor.close(); }
         assertTrue(motor.cierreCompleto());
     }
@@ -150,5 +152,29 @@ class MotorSimulacionTest {
         } finally { if(scanner!=null) scanner.close(); motor.close(); }
         assertTrue(motor.cierreCompleto());
         assertTrue(parts.resources().snapshot().values().stream().allMatch(r -> r.disponibles()==r.capacidad()));
+    }
+
+    @Test void areaDeCargaEsAdquiridaRealmentePorMercanciaQueLaRequiere() throws Exception {
+        var parts=system(8); var motor=new MotorSimulacion(1,new TiempoSimulado(100),
+                EstrategiaPlanificacion.PRIORIDAD_ESTRICTA,100,parts.resources());
+        GestorRecursos.Reserva carga=null;
+        try {
+            motor.conectarInventario(parts.inventory());
+            var receipt=parts.reception().recibir(CatalogoProductos.porId("REFRIGERADO"),1);
+            motor.iniciar();
+            assertEquals(gt.redxela.modelo.EstadoRecepcion.APLICADA,
+                    parts.reception().esperarEstado(receipt.id(),gt.redxela.modelo.EstadoRecepcion.APLICADA,2,TimeUnit.SECONDS).estado());
+            carga=parts.resources().adquirir("prueba-ocupa-areas-carga",java.util.Map.of(TipoRecurso.AREA_CARGA,2));
+            var order=new Pedido(new Cliente("Prueba","carga@example.test"),NivelServicio.ESTANDAR,
+                    List.of(new LineaPedido(TipoMercancia.REFRIGERADO,1)));
+            motor.enviar(order);
+            assertTrue(motor.esperarEstado(order.id(),EstadoPedido.ESPERANDO_RECURSOS,2,TimeUnit.SECONDS));
+            var state=parts.resources().snapshotCompleto();
+            assertEquals(0,state.recursos().get(TipoRecurso.AREA_CARGA).disponibles());
+            assertTrue(state.esperas().containsKey(order.id().toString()));
+            carga.close(); carga=null;
+            assertTrue(motor.esperarEstado(order.id(),EstadoPedido.FINALIZADO,3,TimeUnit.SECONDS));
+        } finally { if(carga!=null)carga.close(); motor.close(); }
+        assertTrue(parts.resources().snapshot().values().stream().allMatch(r->r.disponibles()==r.capacidad()));
     }
 }

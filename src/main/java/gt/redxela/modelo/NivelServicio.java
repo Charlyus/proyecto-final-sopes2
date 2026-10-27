@@ -19,5 +19,21 @@ public enum NivelServicio {
     public String etiqueta() { return etiqueta; }
     public int prioridad() { return prioridad; }
 
+    /** Objetivo máximo de espera hasta el inicio efectivo; Exprés es cualitativo. */
+    public Long objetivoEsperaMillis() {
+        return switch (this) {
+            case EXPRES -> null;
+            case PRIORITARIO -> 10L * 60 * 1000;
+            case ESTANDAR -> 30L * 60 * 1000;
+            case PROGRAMADO -> 60L * 60 * 1000;
+            case ECONOMICO -> 120L * 60 * 1000;
+        };
+    }
+
+    public String objetivoEsperaTexto() {
+        Long millis = objetivoEsperaMillis();
+        return millis == null ? "Casi inmediato (cualitativo)" : "Máximo " + (millis / 60_000) + " min";
+    }
+
     @Override public String toString() { return etiqueta; }
 }

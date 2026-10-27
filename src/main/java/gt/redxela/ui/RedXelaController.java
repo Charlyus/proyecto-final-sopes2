@@ -48,8 +48,9 @@ public final class RedXelaController {
     private final Almacen warehouse = new Almacen(List.of(100, 100, 100, 100, 100));
     private final Recepcion reception = new Recepcion(receiptQueue, warehouse.capacidadTotal());
     private final Inventario inventory = new Inventario(receiptQueue, reception, warehouse, resources);
+    private final EscalaTiempoSimulado timeScale = EscalaTiempoSimulado.configurada();
     private final MotorSimulacion motor = new MotorSimulacion(3, new TiempoSimulado(250),
-            EstrategiaPlanificacion.PRIORIDAD_ESTRICTA, 10_000, resources);
+            EstrategiaPlanificacion.PRIORIDAD_ESTRICTA, 10_000, resources, timeScale);
     private final DemostracionDeadlock conflictDemo = new DemostracionDeadlock(resources, motor, reception, 500);
     private final GeneradorPedidos generator;
     private final ExecutorService background = Executors.newSingleThreadExecutor(r -> {
@@ -242,7 +243,17 @@ public final class RedXelaController {
         orderTable.getSelectionModel().selectedItemProperty().addListener((obs, old, selected) -> updateOrderDetail(selected));
         VBox queue = card("Cola pendiente de despacho", label("Instantánea ordenada por el planificador; no garantiza cuál worker inicia primero.", "queue-note"), queueTable);
         VBox generator = generatorCard();
-        return page("Pedidos", "Registra pedidos, observa el criterio de despacho y controla llegadas automáticas.", plannerControls, form, generator, queue, allOrders, orderDetail);
+        return page("Pedidos", "Registra pedidos, observa el criterio de despacho y controla llegadas automáticas.",
+                plannerControls, form, card("Catálogo de mercancías y recursos",label(catalogDescription(),"helper-text")),
+                generator, queue, allOrders, orderDetail);
+    }
+
+    private static String catalogDescription() {
+        return Arrays.stream(TipoMercancia.values()).map(type -> {
+            RequisitoRecursos r=CatalogoMercancias.requisitosDe(type);
+            return type.etiqueta()+" — "+type.descripcion()+" Recursos: empaque "+r.empaques()+", carga "+r.areasCarga()+
+                    ", encargados "+r.encargados()+", montacargas "+r.montacargas()+", calidad "+r.estacionesCalidad()+", escáner "+r.escaneres()+".";
+        }).reduce((a,b)->a+"\n"+b).orElse("");
     }
 
     private VBox generatorCard() {
@@ -375,7 +386,8 @@ public final class RedXelaController {
                     comparisonPreview.stockInicial()+" · volumen "+comparisonPreview.volumenStockInicial()+" / "+comparisonPreview.capacidadAlmacen()+
                     " u. · recursos comunes: empaque 6, carga 2, encargados 10, montacargas 3, calidad 4, escáner 1 · "+
                     comparisonPreview.trabajadores()+" trabajadores · "+comparisonPreview.intervaloLlegadasMillis()+
-                    " ms entre llegadas · "+comparisonPreview.milisegundosPorUnidad()+" ms reales por unidad · envejecimiento cada "+
+                    " ms entre llegadas · "+comparisonPreview.milisegundosPorUnidad()+" ms reales por unidad · escala simulada "+
+                    String.format(Locale.ROOT,"%.2f×",comparisonPreview.escalaTiempo())+" · envejecimiento cada "+
                     comparisonPreview.intervaloEnvejecimientoMillis()+" ms · límite "+timeout+" ms por política.");
             comparisonRunButton.setDisable(comparisonRunning.get());
         } catch(RuntimeException ex) {
@@ -666,8 +678,8 @@ public final class RedXelaController {
             metrics.get("Procesando").setText(Integer.toString(stat.procesandose()));
             metrics.get("Completados").setText(Integer.toString(stat.completados()));
             if (runtimeStatistics != null) runtimeStatistics.setText(String.format(Locale.ROOT,
-                    "Política: %s · espera llegada→inicio: %.0f ms · procesamiento promedio: %.0f ms · pedidos automáticos: %d (%s)",
-                    work.estrategia(), stat.esperaPromedioMillis(), stat.procesamientoPromedioMillis(), generator.aceptados(), levelCounts(generator.distribucion())));
+                    "Política: %s · escala %.2f× · espera media real llegada→inicio: %s · procesamiento medio real: %s · pedidos automáticos: %d (%s)",
+                    work.estrategia(), timeScale.factor(), optionalMillis(stat.esperaPromedioMillis()), optionalMillis(stat.procesamientoPromedioMillis()), generator.aceptados(), levelCounts(generator.distribucion())));
         }
     }
     private void updateResourceBars(EstadisticasMotor stats) {
@@ -677,7 +689,8 @@ public final class RedXelaController {
             HBox row = new HBox(12); row.getStyleClass().add("resource-row");
             Label name = label(type.etiqueta(), "resource-name");
             ProgressBar bar = new ProgressBar((double)(state.capacidad() - state.disponibles()) / state.capacidad()); HBox.setHgrow(bar, Priority.ALWAYS);
-            Label count = label((state.capacidad() - state.disponibles()) + " / " + state.capacidad() + " ocupados", "resource-count");
+            String owners=state.operacionesPropietarias().isEmpty()?"—":state.operacionesPropietarias().keySet().stream().reduce((a,b)->a+", "+b).orElse("—");
+            Label count = label((state.capacidad() - state.disponibles()) + " / " + state.capacidad() + " ocupados · " + owners, "resource-count");
             row.getChildren().addAll(name, bar, count); resourceOccupancy.getChildren().add(row);
         }
     }
@@ -688,7 +701,7 @@ public final class RedXelaController {
                 column("Origen", row -> row.origen().name(), .11), column("Cliente", row -> row.pedido().cliente().nombre(), .17),
                 column("Servicio", row -> row.pedido().nivelServicio().etiqueta(), .12), column("Unidades", row -> Integer.toString(row.pedido().totalUnidades()), .08),
                 statusColumn("Estado", row -> stateText(row.estado()), row -> stateClass(row.estado()), .18),
-                progressColumn("Progreso", .12), column("Restante", row -> row.tiempoRestanteEstimadoMillis() + " ms", .12));
+                progressColumn("Progreso", .12), column("Restante real", row -> row.tiempoRestanteEstimadoMillis() + " ms", .12));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(360); return table;
     }
 
@@ -713,7 +726,9 @@ public final class RedXelaController {
         pedido.lineas().forEach(line -> requested.merge(line.productoId(), line.cantidad(), Math::addExact));
         Map<String,Inventario.DisponibilidadLinea> availability = inventory.disponibilidadPedido(pedido.id(), requested);
         orderDetailTitle.setText("Pedido " + pedido.id().toString().substring(0,8) + " · "
-                + stateText(state.estado()) + " · disponibilidad actualizada desde Inventario");
+                + stateText(state.estado()) + " · espera simulada llegada→inicio: " + state.esperaServicioMillis() + " ms · "
+                + "objetivo: " + pedido.nivelServicio().objetivoEsperaTexto() + " · "
+                + objectiveText(state) + " · disponibilidad actualizada desde Inventario");
         orderDetailTable.getItems().setAll(requested.entrySet().stream().map(entry -> {
             Inventario.DisponibilidadLinea line = availability.get(entry.getKey());
             return new OrderLineDetail(CatalogoProductos.porId(entry.getKey()).nombre(),
@@ -723,14 +738,15 @@ public final class RedXelaController {
     private TableView<EntradaPlanificacion> planningTable() {
         TableView<EntradaPlanificacion> table = new TableView<>(); table.setPlaceholder(label("No hay pedidos listos para despacho.", "helper-text"));
         table.getColumns().setAll(column("Orden evaluado", row -> Integer.toString(queueTable == null ? 0 : queueTable.getItems().indexOf(row) + 1), .15),
-                column("Pedido", row -> row.pedidoId().toString().substring(0, 8), .18), column("Unidades", row -> Integer.toString(row.unidades()), .15),
-                column("Espera", row -> row.esperaMillis() + " ms", .18), column("Criterio efectivo", row -> planningCriterion(row), .34));
+                column("Pedido", row -> row.pedidoId().toString().substring(0, 8), .16),
+                column("Servicio", row -> row.servicio().etiqueta(), .15), column("Unidades", row -> Integer.toString(row.unidades()), .12),
+                column("Espera simulada", row -> row.esperaMillis() + " ms", .16), column("Criterio efectivo", row -> planningCriterion(row), .26));
         table.setPrefHeight(240); return table;
     }
     private String planningCriterion(EntradaPlanificacion row) {
         return switch (policy.getValue()) {
             case PRIORIDAD_CON_ENVEJECIMIENTO -> "Prioridad efectiva " + row.prioridadEfectiva();
-            case PRIORIDAD_ESTRICTA -> "Prioridad estricta";
+            case PRIORIDAD_ESTRICTA -> "Prioridad " + row.servicio().prioridad();
             case MENOR_CANTIDAD_PRIMERO -> "Menor trabajo: " + row.unidades() + " unidades";
         };
     }
@@ -846,6 +862,17 @@ public final class RedXelaController {
         return switch(state) { case RECIBIDO -> "Pendiente despacho"; case ESPERANDO_STOCK -> "Esperando stock";
             case ESPERANDO_RECURSOS -> "Esperando recursos"; case EN_PROCESAMIENTO -> "Procesando";
             case FINALIZADO -> "Finalizado"; case CANCELADO -> "Cancelado"; };
+    }
+    private static String objectiveText(EstadoPedidoMotor state) {
+        return switch (state.resultadoObjetivo()) {
+            case ESPERANDO -> "En espera; objetivo aún no evaluado";
+            case DENTRO -> "Dentro del objetivo al iniciar preparación";
+            case EXCEDIDO -> "Objetivo excedido al iniciar preparación";
+            case CUALITATIVO -> "Objetivo cualitativo; sin umbral numérico";
+        };
+    }
+    private static String optionalMillis(Double value) {
+        return value==null?"—":String.format(Locale.ROOT,"%.0f ms",value);
     }
     private static String stateClass(EstadoPedido state) {
         return switch(state) { case FINALIZADO -> "status-good"; case ESPERANDO_STOCK, ESPERANDO_RECURSOS -> "status-wait";
