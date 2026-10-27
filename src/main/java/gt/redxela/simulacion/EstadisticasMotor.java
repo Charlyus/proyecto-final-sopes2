@@ -5,8 +5,8 @@ import gt.redxela.concurrencia.TipoRecurso;
 import java.util.Map;
 
 public record EstadisticasMotor(int pendientes, int esperandoStock, int esperandoRecursos, int procesandose,
-                                int completados, double esperaPromedioMillis,
-                                double procesamientoPromedioMillis,
+                                int completados, Double esperaPromedioMillis,
+                                Double procesamientoPromedioMillis,
                                 Map<TipoRecurso, GestorRecursos.EstadoRecurso> recursos,
                                 Map<TipoRecurso, Double> utilizacionAcumulada) {
     public EstadisticasMotor {

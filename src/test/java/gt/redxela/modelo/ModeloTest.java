@@ -24,6 +24,9 @@ class ModeloTest {
 
     @Test void catalogoContieneCincoTiposConRecursosYEstadosDeEsperaDistintos() {
         assertEquals(5, CatalogoMercancias.todos().size());
+        assertEquals(5, CatalogoMercancias.todos().values().stream().distinct().count());
+        assertTrue(java.util.Arrays.stream(TipoMercancia.values()).allMatch(t->!t.descripcion().isBlank()));
+        assertEquals(1,CatalogoMercancias.requisitosDe(TipoMercancia.REFRIGERADO).areasCarga());
         assertNotEquals(CatalogoMercancias.requisitosDe(TipoMercancia.DOCUMENTOS),
                 CatalogoMercancias.requisitosDe(TipoMercancia.VOLUMINOSO));
         assertNotEquals(EstadoPedido.ESPERANDO_STOCK, EstadoPedido.ESPERANDO_RECURSOS);

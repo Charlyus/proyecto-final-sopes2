@@ -4,6 +4,7 @@ import gt.redxela.almacenamiento.Almacen;
 import gt.redxela.concurrencia.GestorRecursos;
 import gt.redxela.concurrencia.TipoRecurso;
 import gt.redxela.concurrencia.TiempoSimulado;
+import gt.redxela.concurrencia.EscalaTiempoSimulado;
 import gt.redxela.inventario.*;
 import gt.redxela.modelo.*;
 import gt.redxela.planificacion.EstrategiaPlanificacion;
@@ -101,7 +102,8 @@ public final class ComparadorPoliticas {
         Inventario inventory=new Inventario(queue,reception,warehouse,resources);
         MotorSimulacion motor=new MotorSimulacion(scenario.trabajadores(),
                 new TiempoSimulado(scenario.milisegundosPorUnidad()),strategy,
-                scenario.intervaloEnvejecimientoMillis(),resources);
+                scenario.intervaloEnvejecimientoMillis(),resources,
+                new EscalaTiempoSimulado(scenario.escalaTiempo()));
         motor.conectarInventario(inventory);
         ScheduledExecutorService arrivals=Executors.newSingleThreadScheduledExecutor(r->{
             Thread t=new Thread(r,"redxela-comparacion-llegadas-"+strategy.name().toLowerCase(Locale.ROOT)); t.setDaemon(false); return t;

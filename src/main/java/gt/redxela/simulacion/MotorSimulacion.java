@@ -13,10 +13,12 @@ import java.util.concurrent.locks.ReentrantLock;
 /** Motor en memoria. El lock protege solamente despacho/estados; nunca cubre la duración del trabajo. */
 public final class MotorSimulacion implements AutoCloseable {
     private static final class RuntimeOrder {
-        final Pedido pedido; final long arrival; final long order; final OrigenPedido origen;
-        EstadoPedido state = EstadoPedido.ESPERANDO_STOCK; Long started; Long finished;
+        final Pedido pedido; final long arrival; final long arrivalSimulated; final long order; final OrigenPedido origen;
+        EstadoPedido state = EstadoPedido.ESPERANDO_STOCK; Long started; Long startedSimulated; Long serviceWaitAtStart; Long finished;
         Thread worker; boolean consumed; String error;
-        RuntimeOrder(Pedido p, long arrival, long order, OrigenPedido origen) { pedido=p; this.arrival=arrival; this.order=order; this.origen=origen; }
+        RuntimeOrder(Pedido p, long arrival, long arrivalSimulated, long order, OrigenPedido origen) {
+            pedido=p; this.arrival=arrival; this.arrivalSimulated=arrivalSimulated; this.order=order; this.origen=origen;
+        }
     }
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition changed = lock.newCondition();
@@ -26,6 +28,7 @@ public final class MotorSimulacion implements AutoCloseable {
     private final GestorRecursos resourceManager;
     private final PlanificadorPedidos planner;
     private final TiempoSimulado simulatedTime;
+    private final EscalaTiempoSimulado clock;
     private final long observedFrom = System.nanoTime();
     private EstrategiaPlanificacion strategy;
     private long sequence;
@@ -42,8 +45,15 @@ public final class MotorSimulacion implements AutoCloseable {
     public MotorSimulacion(int numeroTrabajadores, TiempoSimulado tiempo,
                            EstrategiaPlanificacion estrategia, long intervaloEnvejecimientoMillis,
                            GestorRecursos resourceManager) {
+        this(numeroTrabajadores,tiempo,estrategia,intervaloEnvejecimientoMillis,resourceManager,EscalaTiempoSimulado.configurada());
+    }
+
+    public MotorSimulacion(int numeroTrabajadores, TiempoSimulado tiempo,
+                           EstrategiaPlanificacion estrategia, long intervaloEnvejecimientoMillis,
+                           GestorRecursos resourceManager, EscalaTiempoSimulado clock) {
         if (numeroTrabajadores <= 0) throw new IllegalArgumentException("se requiere al menos un trabajador");
         this.simulatedTime = Objects.requireNonNull(tiempo);
+        this.clock = Objects.requireNonNull(clock);
         this.strategy = Objects.requireNonNull(estrategia);
         this.planner = new PlanificadorPedidos(TimeUnit.MILLISECONDS.toNanos(intervaloEnvejecimientoMillis));
         this.resourceManager=Objects.requireNonNull(resourceManager);
@@ -83,9 +93,10 @@ public final class MotorSimulacion implements AutoCloseable {
             // La validación estructural cubre también los pedidos automáticos porque todos
             // entran por esta API; la falta temporal de stock sigue siendo una espera válida.
             inventario.validarCapacidadPedido(pedido);
-            RuntimeOrder runtime = new RuntimeOrder(pedido, System.nanoTime(), sequence++, origen);
+            long arrival=System.nanoTime();
+            RuntimeOrder runtime = new RuntimeOrder(pedido, arrival, clock.ahoraNanos(), sequence++, origen);
             orders.put(pedido.id(), runtime); pending.add(runtime);
-            reevaluarStockLocked(System.nanoTime()); changed.signalAll();
+            reevaluarStockLocked(clock.ahoraNanos()); changed.signalAll();
         } finally { lock.unlock(); }
     }
 
@@ -103,7 +114,7 @@ public final class MotorSimulacion implements AutoCloseable {
         try {
             strategy = Objects.requireNonNull(nueva);
             // Reasigna stock de todas las órdenes aún pendientes; las ya despachadas no se interrumpen.
-            reevaluarStockLocked(System.nanoTime()); changed.signalAll();
+            reevaluarStockLocked(clock.ahoraNanos()); changed.signalAll();
         }
         finally { lock.unlock(); }
     }
@@ -116,7 +127,7 @@ public final class MotorSimulacion implements AutoCloseable {
 
     /** Stock se asigna explícitamente por la política vigente, y un pedido sin stock nunca ocupa worker. */
     private void reevaluarStock() {
-        lock.lock(); try { reevaluarStockLocked(System.nanoTime()); changed.signalAll(); }
+        lock.lock(); try { reevaluarStockLocked(clock.ahoraNanos()); changed.signalAll(); }
         finally { lock.unlock(); }
     }
     private void reevaluarStockLocked(long now) {
@@ -140,7 +151,7 @@ public final class MotorSimulacion implements AutoCloseable {
     }
     private PlanificadorPedidos.Candidato<RuntimeOrder> candidate(RuntimeOrder order) {
         return new PlanificadorPedidos.Candidato<>(order,order.pedido.nivelServicio().prioridad(),
-                order.pedido.totalUnidades(),order.arrival,order.order);
+                order.pedido.totalUnidades(),order.arrivalSimulated,order.order);
     }
 
     /** Cancela una orden y devuelve al stock toda reserva anterior al consumo físico. */
@@ -153,7 +164,7 @@ public final class MotorSimulacion implements AutoCloseable {
             if (!order.consumed)
                 inventario.liberarReserva(orderId);
             if (order.worker!=null) order.worker.interrupt();
-            reevaluarStockLocked(System.nanoTime()); changed.signalAll(); return true;
+            reevaluarStockLocked(clock.ahoraNanos()); changed.signalAll(); return true;
         } finally { lock.unlock(); }
     }
 
@@ -171,7 +182,9 @@ public final class MotorSimulacion implements AutoCloseable {
                         }
                         // Orden lock motor -> lock inventario; consumir no espera por recursos ni hace I/O.
                         inventario.consumirReserva(item.pedido.id()); item.consumed=true;
-                        transition(item, EstadoPedido.EN_PROCESAMIENTO); item.started = System.nanoTime();
+                        item.started = System.nanoTime(); item.startedSimulated=clock.ahoraNanos();
+                        item.serviceWaitAtStart=TimeUnit.NANOSECONDS.toMillis(Math.max(0,item.startedSimulated-item.arrivalSimulated));
+                        transition(item, EstadoPedido.EN_PROCESAMIENTO);
                     } finally { lock.unlock(); }
                     doWork(item);
                     lock.lock();
@@ -209,7 +222,7 @@ public final class MotorSimulacion implements AutoCloseable {
                 List<RuntimeOrder> ready=pending.stream().filter(o -> o.state==EstadoPedido.RECIBIDO).toList();
                 if (!ready.isEmpty()) {
                     List<PlanificadorPedidos.Candidato<RuntimeOrder>> candidates = ready.stream().map(this::candidate).toList();
-                    RuntimeOrder selected = planner.seleccionar(candidates, strategy, System.nanoTime());
+                    RuntimeOrder selected = planner.seleccionar(candidates, strategy, clock.ahoraNanos());
                     pending.remove(selected);
                     transition(selected, EstadoPedido.ESPERANDO_RECURSOS);
                     selected.worker=Thread.currentThread();
@@ -306,6 +319,7 @@ public final class MotorSimulacion implements AutoCloseable {
 
     public SnapshotMotor snapshot() {
         long now = System.nanoTime();
+        long simulatedNow = clock.ahoraNanos();
         lock.lock();
         try {
             List<EstadoPedidoMotor> orderSnapshots = orders.values().stream().map(o -> {
@@ -316,7 +330,15 @@ public final class MotorSimulacion implements AutoCloseable {
                     long elapsed = now - o.started; progress = Math.min(1.0, (double)elapsed/total);
                     remaining = TimeUnit.NANOSECONDS.toMillis(Math.max(0, total-elapsed));
                 }
-                return new EstadoPedidoMotor(o.pedido, o.state, o.arrival, o.started, o.finished, progress, remaining, o.origen, o.error);
+                Long target=o.pedido.nivelServicio().objetivoEsperaMillis();
+                long serviceWait=o.serviceWaitAtStart!=null?o.serviceWaitAtStart:
+                        TimeUnit.NANOSECONDS.toMillis(Math.max(0,simulatedNow-o.arrivalSimulated));
+                EstadoPedidoMotor.ResultadoObjetivo objective;
+                if(target==null) objective=EstadoPedidoMotor.ResultadoObjetivo.CUALITATIVO;
+                else if(o.serviceWaitAtStart==null) objective=EstadoPedidoMotor.ResultadoObjetivo.ESPERANDO;
+                else objective=o.serviceWaitAtStart<=target?EstadoPedidoMotor.ResultadoObjetivo.DENTRO:EstadoPedidoMotor.ResultadoObjetivo.EXCEDIDO;
+                return new EstadoPedidoMotor(o.pedido, o.state, o.arrival, o.started, o.finished, progress, remaining,
+                        o.origen, o.error, serviceWait, target, objective);
             }).toList();
             Map<TipoRecurso, GestorRecursos.EstadoRecurso> resources = resourceManager.snapshot();
             EnumMap<TipoRecurso,Double> utilization = new EnumMap<>(TipoRecurso.class);
@@ -339,13 +361,15 @@ public final class MotorSimulacion implements AutoCloseable {
             }
             int waitingStock=(int)orders.values().stream().filter(o -> o.state==EstadoPedido.ESPERANDO_STOCK).count();
             EstadisticasMotor stats = new EstadisticasMotor(queued, waitingStock, waiting, processing, completed,
-                    waitSamples==0?0:(double)waitNanos/waitSamples/1_000_000,
-                    processingSamples==0?0:(double)processingNanos/processingSamples/1_000_000,
+                    waitSamples==0?null:(double)waitNanos/waitSamples/1_000_000,
+                    processingSamples==0?null:(double)processingNanos/processingSamples/1_000_000,
                     resources, utilization);
             List<RuntimeOrder> ready = pending.stream().filter(o -> o.state == EstadoPedido.RECIBIDO).toList();
-            List<EntradaPlanificacion> queueView = planner.ordenar(ready.stream().map(this::candidate).toList(), strategy, now)
+            List<EntradaPlanificacion> queueView = planner.ordenar(ready.stream().map(this::candidate).toList(), strategy, simulatedNow)
                     .stream().map(c -> new EntradaPlanificacion(c.valor().pedido.id(),
-                            planner.prioridadEfectiva(c, now), c.unidades(), TimeUnit.NANOSECONDS.toMillis(Math.max(0, now-c.llegadaNanos())))).toList();
+                            planner.prioridadEfectiva(c, simulatedNow), c.unidades(),
+                            TimeUnit.NANOSECONDS.toMillis(Math.max(0, simulatedNow-c.llegadaNanos())),
+                            c.valor().pedido.nivelServicio())).toList();
             return new SnapshotMotor(orderSnapshots, stats, running && !closing, strategy, queueView, now);
         } finally { lock.unlock(); }
     }
