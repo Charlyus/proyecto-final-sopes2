@@ -2,8 +2,10 @@ package gt.redxela.almacenamiento;
 
 import gt.redxela.inventario.CatalogoProductos;
 import gt.redxela.modelo.Producto;
+import gt.redxela.modelo.TipoMercancia;
 import org.junit.jupiter.api.Test;
 import java.util.List;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AlmacenTest {
@@ -21,5 +23,13 @@ class AlmacenTest {
     }
     @Test void capacidadesNoPositivasSeRechazan() {
         assertThrows(IllegalArgumentException.class,()->new Almacen(List.of(3,0)));
+    }
+
+    @Test void validaSiExisteAsignacionSinMezclarProductosIndependienteDelOrdenGreedy() {
+        var warehouse=new Almacen(List.of(10,6,6));
+        var sixVolume=new Producto("A","Producto A",TipoMercancia.DOCUMENTOS,6);
+        var threeVolume=new Producto("B","Producto B",TipoMercancia.FRAGIL,3);
+        assertDoesNotThrow(() -> warehouse.validarCabeEnAlmacenVacio(Map.of("A",sixVolume,"B",threeVolume),
+                Map.of("A",2,"B",3)));
     }
 }

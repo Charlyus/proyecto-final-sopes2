@@ -60,6 +60,51 @@ class MotorSimulacionTest {
         } finally { motor.close(); }
     }
 
+    @Test void rechazaPedidoQueNoCabeEnAlmacenVacioIncluyendoLineasRepetidas() {
+        var parts=smallWarehouseSystem(); var motor=new MotorSimulacion(1,new TiempoSimulado(1),
+                EstrategiaPlanificacion.PRIORIDAD_ESTRICTA,100,parts.resources());
+        try {
+            motor.conectarInventario(parts.inventory()); motor.iniciar();
+            var oversized=pedido(501);
+            var error=assertThrows(IllegalArgumentException.class,() -> motor.enviar(oversized));
+            assertTrue(error.getMessage().contains("no cabe en el almacén vacío"));
+            assertTrue(motor.snapshot().pedidos().isEmpty());
+
+            // El volumen total suma exactamente 500, pero no cabe: documentos y
+            // voluminosos no pueden compartir ubicación y sus unidades no llenan bins exactos.
+            var fragmented=new Pedido(new Cliente("Prueba","fragmentado@example.test"),NivelServicio.ESTANDAR,List.of(
+                    new LineaPedido(TipoMercancia.DOCUMENTOS,396),
+                    new LineaPedido(TipoMercancia.VOLUMINOSO,13)));
+            assertTrue(assertThrows(IllegalArgumentException.class,() -> motor.enviar(fragmented))
+                    .getMessage().contains("una mercancía por ubicación"));
+            var repeated=new Pedido(new Cliente("Prueba","lineas@example.test"),NivelServicio.ESTANDAR,List.of(
+                    new LineaPedido(TipoMercancia.DOCUMENTOS,300),new LineaPedido(TipoMercancia.DOCUMENTOS,300)));
+            assertThrows(IllegalArgumentException.class,() -> motor.enviar(repeated));
+            assertTrue(motor.snapshot().pedidos().isEmpty());
+        } finally { motor.close(); }
+    }
+
+    @Test void pedidoQueCabePeroNoTieneStockQuedaEnEsperaTemporal() throws Exception {
+        var parts=smallWarehouseSystem(); var motor=new MotorSimulacion(1,new TiempoSimulado(1),
+                EstrategiaPlanificacion.PRIORIDAD_ESTRICTA,100,parts.resources());
+        try {
+            motor.conectarInventario(parts.inventory()); motor.iniciar();
+            var valid=pedido(500);
+            motor.enviar(valid);
+            assertTrue(motor.esperarEstado(valid.id(),EstadoPedido.ESPERANDO_STOCK,1,TimeUnit.SECONDS));
+            assertEquals(1,motor.snapshot().pedidos().size());
+            assertEquals(1,motor.snapshot().estadisticas().esperandoStock());
+        } finally { motor.close(); }
+        assertTrue(motor.cierreCompleto());
+    }
+
+    private SystemParts smallWarehouseSystem() {
+        var manager=new GestorRecursos(); var queue=new ArrayBlockingQueue<SolicitudRecepcion>(8);
+        var reception=new Recepcion(queue,500);
+        var inventory=new Inventario(queue,reception,new Almacen(List.of(100,100,100,100,100)),manager);
+        return new SystemParts(manager,reception,inventory);
+    }
+
     @Test void llegadaDeMercaderiaDesbloqueaPedidoEsperandoStock() throws Exception {
         var parts=system(8); var motor=new MotorSimulacion(1,new TiempoSimulado(1000),
                 EstrategiaPlanificacion.PRIORIDAD_ESTRICTA,100,parts.resources());

@@ -121,7 +121,8 @@ public final class GeneradorPedidos implements AutoCloseable {
         Pedido siguiente() {
             NivelServicio[] levels = NivelServicio.values();
             NivelServicio level = levels[index++ % levels.length];
-            int total = config.unidadesMinimas() + random.nextInt(config.unidadesMaximas() - config.unidadesMinimas() + 1);
+            long range = (long) config.unidadesMaximas() - config.unidadesMinimas() + 1;
+            int total = (int) (config.unidadesMinimas() + random.nextLong(range));
             List<Producto> products = new ArrayList<>(CatalogoProductos.todos());
             Collections.shuffle(products, random);
             int count = Math.min(total, 1 + random.nextInt(Math.min(3, products.size())));

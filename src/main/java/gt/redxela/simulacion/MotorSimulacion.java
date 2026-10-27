@@ -79,6 +79,9 @@ public final class MotorSimulacion implements AutoCloseable {
         try {
             if (!running || closing) throw new IllegalStateException("motor no acepta pedidos");
             if (orders.containsKey(pedido.id())) throw new IllegalArgumentException("id de pedido duplicado");
+            // La validación estructural cubre también los pedidos automáticos porque todos
+            // entran por esta API; la falta temporal de stock sigue siendo una espera válida.
+            inventario.validarCapacidadPedido(pedido);
             RuntimeOrder runtime = new RuntimeOrder(pedido, System.nanoTime(), sequence++, origen);
             orders.put(pedido.id(), runtime); pending.add(runtime);
             reevaluarStockLocked(System.nanoTime()); changed.signalAll();
