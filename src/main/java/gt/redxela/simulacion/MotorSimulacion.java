@@ -31,6 +31,7 @@ public final class MotorSimulacion implements AutoCloseable {
     private long sequence;
     private boolean running;
     private boolean closing;
+    private boolean demonstrationPaused;
     private Inventario inventario;
 
     public MotorSimulacion(int numeroTrabajadores, TiempoSimulado tiempo,
@@ -204,6 +205,7 @@ public final class MotorSimulacion implements AutoCloseable {
         try {
             while (true) {
                 if (closing) return null;
+                if (demonstrationPaused) { changed.await(); continue; }
                 List<RuntimeOrder> ready=pending.stream().filter(o -> o.state==EstadoPedido.RECIBIDO).toList();
                 if (!ready.isEmpty()) {
                     List<PlanificadorPedidos.Candidato<RuntimeOrder>> candidates = ready.stream().map(this::candidate).toList();
@@ -216,6 +218,30 @@ public final class MotorSimulacion implements AutoCloseable {
                 changed.await();
             }
         } finally { lock.unlock(); }
+    }
+
+    /** Congela despachos de forma atómica solo si ningún pedido ya salió de la cola. */
+    public PausaDemostracion pausarDespachoParaDemostracion() {
+        lock.lock();
+        try {
+            if (!running || closing) throw new IllegalStateException("El motor debe estar activo");
+            if (demonstrationPaused) throw new IllegalStateException("El despacho ya está pausado");
+            boolean occupied = orders.values().stream().anyMatch(o -> o.state == EstadoPedido.ESPERANDO_RECURSOS
+                    || o.state == EstadoPedido.EN_PROCESAMIENTO);
+            if (occupied) throw new IllegalStateException("Hay pedidos normales en curso; espere a que terminen");
+            demonstrationPaused = true;
+            changed.signalAll();
+            return new PausaDemostracion();
+        } finally { lock.unlock(); }
+    }
+
+    public final class PausaDemostracion implements AutoCloseable {
+        private boolean closed;
+        private PausaDemostracion() { }
+        @Override public void close() {
+            lock.lock(); try { if (!closed) { demonstrationPaused = false; closed = true; changed.signalAll(); } }
+            finally { lock.unlock(); }
+        }
     }
 
     private void doWork(RuntimeOrder item) throws InterruptedException {

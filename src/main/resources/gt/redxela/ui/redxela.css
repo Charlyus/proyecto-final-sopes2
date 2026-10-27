@@ -53,4 +53,8 @@
 .generator-active { -fx-text-fill: #24744e; -fx-font-weight: 700; }
 .generator-stopped { -fx-text-fill: #687a91; }
 .queue-note { -fx-background-color: #eaf2fb; -fx-background-radius: 7px; -fx-padding: 10px 12px; -fx-text-fill: #4e6682; -fx-font-size: 11px; -fx-wrap-text: true; }
+.conflict-operation { -fx-background-color: #f7f9fc; -fx-background-radius: 8px; -fx-border-color: #e1e8f0; -fx-border-radius: 8px; -fx-padding: 14px; -fx-text-fill: #34465b; -fx-font-size: 12px; -fx-wrap-text: true; }
+.conflict-state-bad { -fx-background-color: #ffebea; -fx-text-fill: #a83f3a; -fx-font-weight: 700; -fx-padding: 8px 11px; -fx-background-radius: 7px; -fx-wrap-text: true; }
+.conflict-state-active { -fx-background-color: #fff3dc; -fx-text-fill: #986514; -fx-font-weight: 700; -fx-padding: 8px 11px; -fx-background-radius: 7px; }
+.text-area { -fx-background-radius: 8px; -fx-border-radius: 8px; -fx-border-color: #e5eaf1; -fx-font-size: 11px; }
 .separator *.line { -fx-border-color: #e8edf3; }
