@@ -9,6 +9,7 @@ import gt.redxela.simulacion.*;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
+import javafx.concurrent.Task;
 import javafx.beans.property.ReadOnlyDoubleWrapper;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.collections.FXCollections;
@@ -17,6 +18,7 @@ import javafx.fxml.FXML;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.*;
+import javafx.scene.chart.*;
 import javafx.scene.layout.*;
 import javafx.stage.Stage;
 import javafx.util.Duration;
@@ -30,6 +32,8 @@ import java.util.function.Function;
 public final class RedXelaController {
     private record ResourceRow(TipoRecurso tipo, GestorRecursos.EstadoRecurso state, double utilization) { }
     private record OrderLineDetail(String productName, int requested, int available, int missing) { }
+    private record ComparisonLevelRow(EstrategiaPlanificacion politica, NivelServicio servicio, Double esperaMillis) { }
+    private record ComparisonResourceRow(EstrategiaPlanificacion politica, TipoRecurso recurso, Double utilizacion) { }
     @FXML private BorderPane root;
     @FXML private VBox navigation;
     @FXML private StackPane content;
@@ -100,6 +104,23 @@ public final class RedXelaController {
     private Label operationBView;
     private TextArea conflictEvents;
     private final AtomicBoolean conflictLaunching = new AtomicBoolean();
+    private final ComparadorPoliticas policyComparator = new ComparadorPoliticas();
+    private final AtomicBoolean comparisonRunning = new AtomicBoolean();
+    private final ComboBox<EscenarioComparacion.Perfil> comparisonProfile = new ComboBox<>();
+    private final TextField comparisonSeed = new TextField("42");
+    private final TextField comparisonTimeout = new TextField("15000");
+    private EscenarioComparacion comparisonPreview;
+    private Label comparisonSummary;
+    private Label comparisonStatus;
+    private ProgressBar comparisonProgress;
+    private Button comparisonRunButton;
+    private Button comparisonCancelButton;
+    private TableView<ComparadorPoliticas.ResultadoPolitica> comparisonTable;
+    private TableView<ComparisonLevelRow> comparisonLevelTable;
+    private TableView<ComparisonResourceRow> comparisonResourceTable;
+    private BarChart<String,Number> comparisonWaitChart;
+    private Task<ComparadorPoliticas.Resultado> comparisonTask;
+    private ComparadorPoliticas.Cancelacion comparisonCancellation;
     private Timeline refreshTimeline;
     private Stage stage;
     private boolean demoLoaded;
@@ -133,6 +154,7 @@ public final class RedXelaController {
         pages.put("Panel general", dashboardPage()); pages.put("Pedidos", ordersPage());
         pages.put("Recepción", receptionPage()); pages.put("Almacén", warehousePage()); pages.put("Clientes", clientsPage());
         pages.put("Conflictos", conflictsPage());
+        pages.put("Comparación", comparisonPage());
         orderClient.valueProperty().addListener((obs, old, value) -> { if (value != null) orderService.setValue(value.nivelServicio()); });
         orderPolicy.valueProperty().addListener((obs, old, value) -> { if (value != null) policy.setValue(value); });
         showPage("Panel general");
@@ -153,7 +175,7 @@ public final class RedXelaController {
     }
 
     private void buildNavigation() {
-        for (String name : List.of("Panel general", "Pedidos", "Recepción", "Almacén", "Clientes", "Conflictos")) {
+        for (String name : List.of("Panel general", "Pedidos", "Recepción", "Almacén", "Clientes", "Conflictos", "Comparación")) {
             Button button = new Button(name);
             button.getStyleClass().add("nav-button"); button.setMaxWidth(Double.MAX_VALUE);
             button.setOnAction(event -> showPage(name)); navigation.getChildren().add(button);
@@ -280,6 +302,160 @@ public final class RedXelaController {
                 cards, card("Ciclo de espera", conflictCycle,
                         label("A conserva el escáner y espera montacargas. B conserva los tres permisos de montacargas y espera el escáner. La resolución interrumpe una operación; ella misma libera lo retenido en finally.","helper-text")),
                 card("Eventos", conflictEvents));
+    }
+
+    private Node comparisonPage() {
+        comparisonProfile.setItems(FXCollections.observableArrayList(EscenarioComparacion.PERFILES));
+        comparisonProfile.getSelectionModel().selectLast();
+        comparisonProfile.setMaxWidth(Double.MAX_VALUE);
+        comparisonSeed.setPromptText("Semilla entera"); comparisonTimeout.setPromptText("Límite en ms");
+        FlowPane inputs=new FlowPane(12,10,labeled("Escenario",comparisonProfile),
+                labeled("Semilla",comparisonSeed),labeled("Límite por política (ms)",comparisonTimeout));
+        comparisonSummary=label("Preparando resumen…","queue-note");
+        comparisonStatus=label("Listo para comparar","generator-stopped");
+        comparisonProgress=new ProgressBar(0); comparisonProgress.setMaxWidth(Double.MAX_VALUE);
+        comparisonRunButton=button("Ejecutar comparación","primary",this::startComparison);
+        comparisonCancelButton=button("Cancelar","danger",this::cancelComparison); comparisonCancelButton.setDisable(true);
+        comparisonTable=comparisonResultTable();
+        comparisonLevelTable=new TableView<>(); comparisonLevelTable.setPlaceholder(label("Selecciona una política para ver esperas por nivel.","helper-text"));
+        comparisonLevelTable.getColumns().setAll(column("Nivel de servicio",row->row.servicio().etiqueta(),.55),
+                column("Espera media (ms)",row->formatMillis(row.esperaMillis()),.45));
+        comparisonLevelTable.setPrefHeight(235);
+        comparisonResourceTable=new TableView<>(); comparisonResourceTable.setPlaceholder(label("Selecciona una política para ver utilización.","helper-text"));
+        comparisonResourceTable.getColumns().setAll(column("Recurso",row->row.recurso().etiqueta(),.58),
+                column("Utilización",row->formatPercent(row.utilizacion()),.42));
+        comparisonResourceTable.setPrefHeight(235);
+        comparisonWaitChart=waitChart();
+        comparisonTable.getSelectionModel().selectedItemProperty().addListener((obs,old,value)->showComparisonDetails(value));
+        comparisonProfile.valueProperty().addListener((obs,old,value)->updateComparisonSummary());
+        comparisonSeed.textProperty().addListener((obs,old,value)->updateComparisonSummary());
+        comparisonTimeout.textProperty().addListener((obs,old,value)->updateComparisonSummary());
+        updateComparisonSummary();
+        FlowPane actions=new FlowPane(10,8,comparisonRunButton,comparisonCancelButton,comparisonStatus);
+        HBox details=new HBox(14,card("Espera por nivel de servicio",comparisonLevelTable),
+                card("Utilización acumulada por recurso",comparisonResourceTable));
+        HBox.setHgrow(details.getChildren().get(0),Priority.ALWAYS); HBox.setHgrow(details.getChildren().get(1),Priority.ALWAYS);
+        return page("Comparación de políticas","Tres ejecuciones aisladas con las mismas entradas y condiciones comunes. La planificación concurrente puede variar entre repeticiones.",
+                card("Configuración común",inputs,comparisonSummary,actions,comparisonProgress),
+                card("Resultados por política",label("Pedidos: previstos / aceptados / completados / cancelados / fallidos. Los tiempos son reales, no minutos simulados.","helper-text"),comparisonTable),
+                details,card("Espera media desde llegada hasta inicio efectivo",comparisonWaitChart),
+                label("La prioridad estricta favorece niveles altos; el envejecimiento intercambia parte de esa ventaja por atención a pedidos antiguos; menor trabajo primero puede reducir esperas de tareas cortas y postergar pedidos grandes. Los resultados muestran estos compromisos en este escenario, no una política universalmente mejor.","helper-text"));
+    }
+
+    private TableView<ComparadorPoliticas.ResultadoPolitica> comparisonResultTable() {
+        TableView<ComparadorPoliticas.ResultadoPolitica> table=new TableView<>();
+        table.setPlaceholder(label("Ejecuta una comparación para ver las métricas.","helper-text"));
+        table.getColumns().setAll(
+                column("Política",row->row.politica().toString(),.16),
+                column("Estado",row->comparisonStatusText(row.estado()),.14),
+                column("Pedidos P/A/C/Can/F",row->{var m=row.metricas();return m==null?"—":m.previstos()+" / "+m.aceptados()+" / "+m.completados()+" / "+m.cancelados()+" / "+m.fallidos();},.2),
+                column("Espera media (ms)",row->metric(row,ComparadorPoliticas.Metricas::esperaMediaMillis),.12),
+                column("Espera máx. (ms)",row->metric(row,ComparadorPoliticas.Metricas::esperaMaximaMillis),.12),
+                column("Proc. medio (ms)",row->metric(row,ComparadorPoliticas.Metricas::procesamientoMedioMillis),.12),
+                column("Llegada→fin (ms)",row->metric(row,ComparadorPoliticas.Metricas::llegadaAFinMediaMillis),.12),
+                column("Total (ms)",row->metric(row,ComparadorPoliticas.Metricas::duracionTotalMillis),.12),
+                column("Pedidos/s",row->metric(row,ComparadorPoliticas.Metricas::pedidosPorSegundo),.1));
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(250); return table;
+    }
+
+    private BarChart<String,Number> waitChart() {
+        CategoryAxis x=new CategoryAxis(); x.setLabel("Política");
+        NumberAxis y=new NumberAxis(); y.setLabel("Espera media real (ms)");
+        BarChart<String,Number> chart=new BarChart<>(x,y); chart.setLegendVisible(false); chart.setAnimated(false);
+        chart.setPrefHeight(300); chart.setCategoryGap(40); return chart;
+    }
+
+    private void updateComparisonSummary() {
+        if(comparisonSummary==null) return;
+        try {
+            long seedValue=Long.parseLong(comparisonSeed.getText().trim());
+            long timeout=longValue(comparisonTimeout,"límite por política",100,120_000);
+            comparisonPreview=EscenarioComparacion.generar(Objects.requireNonNull(comparisonProfile.getValue()),seedValue).conLimiteEjecucion(timeout);
+            comparisonSummary.setText("Semilla "+seedValue+" · "+comparisonPreview.pedidos().size()+" pedidos finitos · stock inicial: "+
+                    comparisonPreview.stockInicial()+" · volumen "+comparisonPreview.volumenStockInicial()+" / "+comparisonPreview.capacidadAlmacen()+
+                    " u. · recursos comunes: empaque 6, carga 2, encargados 10, montacargas 3, calidad 4, escáner 1 · "+
+                    comparisonPreview.trabajadores()+" trabajadores · "+comparisonPreview.intervaloLlegadasMillis()+
+                    " ms entre llegadas · "+comparisonPreview.milisegundosPorUnidad()+" ms reales por unidad · envejecimiento cada "+
+                    comparisonPreview.intervaloEnvejecimientoMillis()+" ms · límite "+timeout+" ms por política.");
+            comparisonRunButton.setDisable(comparisonRunning.get());
+        } catch(RuntimeException ex) {
+            comparisonPreview=null; comparisonSummary.setText("Configuración inválida: "+message(ex));
+            comparisonRunButton.setDisable(true);
+        }
+    }
+
+    private void startComparison() {
+        if(!comparisonRunning.compareAndSet(false,true)) return;
+        EscenarioComparacion scenario=comparisonPreview;
+        if(scenario==null) { comparisonRunning.set(false); return; }
+        comparisonCancellation=new ComparadorPoliticas.Cancelacion();
+        comparisonRunButton.setDisable(true); comparisonCancelButton.setDisable(false);
+        comparisonTable.getItems().clear(); comparisonLevelTable.getItems().clear(); comparisonResourceTable.getItems().clear(); comparisonWaitChart.getData().clear();
+        comparisonStatus.setText("Ejecutando políticas en secuencia…"); comparisonProgress.setProgress(0);
+        comparisonTask=new Task<>() {
+            @Override protected ComparadorPoliticas.Resultado call() {
+                return policyComparator.ejecutar(scenario,comparisonCancellation,p->{
+                    updateMessage(p.politica()+" · "+p.mensaje()+" · "+p.pedidosCompletados()+"/"+p.pedidosPrevistos());
+                    updateProgress(p.indicePolitica()+Math.min(1d,(double)p.pedidosCompletados()/Math.max(1,p.pedidosPrevistos())),
+                            EstrategiaPlanificacion.values().length);
+                });
+            }
+        };
+        comparisonStatus.textProperty().bind(comparisonTask.messageProperty());
+        comparisonProgress.progressProperty().bind(comparisonTask.progressProperty());
+        comparisonTask.setOnSucceeded(event->{
+            comparisonStatus.textProperty().unbind(); comparisonProgress.progressProperty().unbind();
+            comparisonRunning.set(false); comparisonCancelButton.setDisable(true); comparisonRunButton.setDisable(comparisonPreview==null);
+            showComparison(comparisonTask.getValue());
+        });
+        comparisonTask.setOnFailed(event->{
+            comparisonStatus.textProperty().unbind(); comparisonProgress.progressProperty().unbind();
+            comparisonRunning.set(false); comparisonCancelButton.setDisable(true); comparisonRunButton.setDisable(comparisonPreview==null);
+            comparisonStatus.setText("Falló la comparación: "+message(comparisonTask.getException()));
+        });
+        try { background.execute(comparisonTask); }
+        catch(RejectedExecutionException ex) {
+            comparisonRunning.set(false); comparisonStatus.textProperty().unbind(); comparisonProgress.progressProperty().unbind();
+            comparisonCancelButton.setDisable(true); comparisonRunButton.setDisable(false); comparisonStatus.setText("No se pudo iniciar: "+message(ex));
+        }
+    }
+
+    private void cancelComparison() {
+        if(comparisonCancellation!=null) comparisonCancellation.cancelar();
+        comparisonStatus.setText("Cancelando · deteniendo llegadas y esperando cierre de recursos…");
+        comparisonCancelButton.setDisable(true);
+    }
+
+    private void showComparison(ComparadorPoliticas.Resultado result) {
+        comparisonTable.getItems().setAll(result.politicas());
+        comparisonStatus.setText(result.estado()+" · "+result.mensaje());
+        result.politicas().stream().filter(r->r.estado()==ComparadorPoliticas.Estado.COMPLETA).findFirst()
+                .ifPresentOrElse(comparisonTable.getSelectionModel()::select,()->showComparisonDetails(null));
+        XYChart.Series<String,Number> series=new XYChart.Series<>();
+        for(var row:result.politicas()) if(row.estado()==ComparadorPoliticas.Estado.COMPLETA&&row.metricas()!=null&&row.metricas().esperaMediaMillis()!=null)
+            series.getData().add(new XYChart.Data<>(row.politica().toString(),row.metricas().esperaMediaMillis()));
+        comparisonWaitChart.getData().setAll(series);
+    }
+
+    private void showComparisonDetails(ComparadorPoliticas.ResultadoPolitica result) {
+        if(comparisonLevelTable==null) return;
+        comparisonLevelTable.getItems().clear(); comparisonResourceTable.getItems().clear();
+        if(result==null||result.estado()!=ComparadorPoliticas.Estado.COMPLETA) return;
+        for(NivelServicio level:NivelServicio.values())
+            comparisonLevelTable.getItems().add(new ComparisonLevelRow(result.politica(),level,result.esperaMediaPorServicioMillis().get(level)));
+        for(TipoRecurso type:TipoRecurso.values())
+            comparisonResourceTable.getItems().add(new ComparisonResourceRow(result.politica(),type,result.utilizacionPorRecurso().get(type)));
+    }
+
+    private static String comparisonStatusText(ComparadorPoliticas.Estado status) {
+        return switch(status) { case COMPLETA->"Completa"; case CANCELADA->"Cancelada"; case LIMITE_TIEMPO->"Límite agotado";
+            case FALLIDA->"Fallida"; case NO_EJECUTADA->"No ejecutada"; };
+    }
+    private static String formatMillis(Double value) { return value==null?"—":String.format(Locale.ROOT,"%.2f",value); }
+    private static String formatPercent(Double value) { return value==null?"—":String.format(Locale.ROOT,"%.1f%%",value*100); }
+    private static String metric(ComparadorPoliticas.ResultadoPolitica result,
+                                 java.util.function.Function<ComparadorPoliticas.Metricas,Double> getter) {
+        return result.metricas()==null?"—":formatMillis(getter.apply(result.metricas()));
     }
 
     private void startConflict() {
@@ -684,10 +860,11 @@ public final class RedXelaController {
                 counts.get(NivelServicio.EXPRES), counts.get(NivelServicio.PRIORITARIO), counts.get(NivelServicio.ESTANDAR),
                 counts.get(NivelServicio.PROGRAMADO), counts.get(NivelServicio.ECONOMICO));
     }
-    private static String message(RuntimeException e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+    private static String message(Throwable e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
 
     private void closeAsynchronously() {
         if (!closeStarted.compareAndSet(false, true)) return;
+        if(comparisonCancellation!=null) comparisonCancellation.cancelar();
         closing.set(true); if (refreshTimeline != null) refreshTimeline.stop(); root.setDisable(true);
         setFooter("Cerrando generador, inventario y motor…");
         Thread closer = new Thread(() -> {
