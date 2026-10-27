@@ -21,18 +21,55 @@ java -jar target/redxela-1.0-SNAPSHOT.jar
 
 ## Demostración manual
 
-1. Ejecuta la aplicación y selecciona una política de planificación.
-2. Pulsa **Iniciar motor** para procesar recepciones y pedidos manuales, o
-   **Cargar demostración con stock inicial** para encolar existencias explícitas
-   (6 Documentos, 2 Paquetes frágiles y 3 Paquetes voluminosos) y tres pedidos.
-3. En **Registrar recepción**, selecciona un producto del catálogo fijo y la
-   cantidad. La cola de recepción admite 12 solicitudes. Si está llena, la UI
-   informa el rechazo sin presentarlo como aceptado. Las recepciones que excedan
-   la capacidad total también se rechazan inmediatamente.
-4. Para un pedido, agrega una o varias líneas, elige el servicio y pulsa
-   **Registrar pedido**. El estado muestra por separado espera de stock y de
-   recursos. Las pestañas presentan pedidos, stock físico/reservado/disponible,
-   ubicaciones, recepciones, recursos y estadísticas.
+1. Ejecuta la aplicación y selecciona una política de planificación antes de
+   iniciar el motor.
+2. Registra clientes con nombre, correo y servicio por defecto. El correo se
+   recorta y normaliza a minúsculas; no se aceptan duplicados ignorando
+   mayúsculas y espacios exteriores. El selector de pedidos permite escoger
+   una cuenta y modificar el servicio para ese pedido. El servicio contratado
+   se captura en el pedido y no cambia al actualizar la cuenta.
+3. En **Registrar recepción**, elige un producto existente y una cantidad. La
+   cola acepta hasta 12 solicitudes; rechazos por saturación son explícitos.
+   Una recepción aplicada actualiza el inventario. El generador nunca repone
+   mercancía por sí mismo.
+4. Para un pedido manual agrega una o más líneas y pulsa **Registrar pedido**.
+   Se conserva la demostración anterior en **Cargar demostración con stock
+   inicial**, que genera tres pedidos con origen `DEMOSTRACION`.
+5. En **Pedidos** se observan origen, cliente, servicio, unidades y estado. En
+   **Cola de planificación** aparece la cola lista para despacho ordenada por
+   la política vigente en un instante común, con espera y prioridad efectiva.
+   Es el criterio de selección, no una garantía del orden de inicio entre
+   workers concurrentes. Los pedidos sin stock aparecen en espera de stock; los
+   despachados muestran espera de recursos y procesamiento. Las demás pestañas
+   muestran stock, ubicaciones, recepciones, recursos y estadísticas.
+
+## Generador automático
+
+El panel **Pedidos automáticos** permite configurar intervalo entre llegadas
+(milisegundos), rango inclusivo de unidades y semilla. La configuración se
+captura al iniciar y se aplica al siguiente reinicio. El generador inicia el
+motor si hace falta, usa un único hilo programado y acepta pedidos hasta pulsar
+**Detener**. Al detenerlo, espera fuera del EDT a que termine cualquier envío
+en curso; los pedidos ya aceptados siguen en el motor. Los fallos de envío se
+muestran como error y la tarea continúa intentando en la próxima llegada.
+
+Los niveles siguen distribución cíclica uniforme: Exprés, Prioritario,
+Estándar, Programado, Económico, repetidamente (20% cada uno en secuencias
+largas). La semilla determina niveles, cuentas sintéticas, productos y
+cantidades; los UUID y las marcas de tiempo son únicos por ejecución. Clientes
+sintéticos se identifican con `[Sintético]`. Para una misma semilla, rango e
+intervalo se repite la secuencia de contenido del pedido; el orden real de
+procesamiento puede variar por concurrencia.
+
+Para demostrar acumulación, inicia el motor con el botón de demostración o
+registra stock suficiente de productos usados, y configura una llegada rápida
+(por ejemplo 100 ms) con pedidos de varias unidades. El trabajo simulado dura
+250 ms por unidad y hay tres workers: si la llegada supera esa tasa de
+procesamiento, crecerán las colas de stock o de recursos. Sin stock, los
+pedidos automáticos quedan en espera de stock y no consumen workers; para
+demostrar competencia por recursos, recibe existencias primero y observa
+**Recursos** y los estados de pedidos. El generador no filtra productos por
+disponibilidad ni descarta pedidos por falta de stock.
 
 ## Decisiones de esta etapa
 
@@ -96,10 +133,20 @@ por la suma de unidades de sus líneas y luego por llegada.
 El trabajo simulado dura `unidades_totales × milisegundos_por_unidad` (250 ms por
 unidad en la demostración) y usa `System.nanoTime()` para medir duración.
 
+El registro de clientes usa un `ReentrantReadWriteLock`; cada cuenta tiene ID
+UUID, nombre, correo y servicio por defecto. Una cuenta no contiene contraseña
+ni autenticación. Pedidos y cuentas, igual que inventario y estadísticas, solo
+existen en memoria y se pierden al cerrar la aplicación. Las estadísticas
+reflejan datos de ejecución. El generador puede funcionar continuamente
+mientras la aplicación siga activa y la máquina tenga recursos suficientes;
+no hay un límite prefijado de cantidad, pero el historial en memoria aumenta
+con cada pedido.
+
 ## Limitaciones actuales
 
-Todo el estado desaparece al cerrar el proceso. No se implementan todavía el
-generador continuo, cuentas completas, escenario deliberado de deadlock ni
-comparación de ejecuciones entre políticas. El catálogo es fijo; el formulario
-solo permite seleccionar sus productos. La ventana presenta pedidos de un
-cliente de demostración.
+Todo el estado desaparece al cerrar el proceso. No se implementan persistencia,
+generación automática de stock, deadlock deliberado y resolución manual,
+comparación de ejecuciones entre políticas ni manuales finales. El catálogo es
+fijo y solo se pueden seleccionar sus productos. Los pedidos automáticos
+pueden crecer sin límite de negocio, pero están condicionados por el tiempo y
+la memoria disponibles en la máquina.

@@ -22,7 +22,7 @@ class MotorSimulacionTest {
         return inventory;
     }
     private Pedido pedido(int unidades) {
-        return new Pedido(new Cliente("Prueba", "T-1"), NivelServicio.ESTANDAR,
+        return new Pedido(new Cliente("Prueba", "prueba@example.test"), NivelServicio.ESTANDAR,
                 List.of(new LineaPedido(TipoMercancia.DOCUMENTOS, unidades)));
     }
     private record SystemParts(GestorRecursos resources, Recepcion reception, Inventario inventory) { }
@@ -65,7 +65,7 @@ class MotorSimulacionTest {
                 EstrategiaPlanificacion.PRIORIDAD_ESTRICTA,100,parts.resources());
         try {
             motor.conectarInventario(parts.inventory()); motor.iniciar();
-            var order=new Pedido(new Cliente("Prueba","T-1"),NivelServicio.ESTANDAR,List.of(
+            var order=new Pedido(new Cliente("Prueba","prueba@example.test"),NivelServicio.ESTANDAR,List.of(
                     new LineaPedido(TipoMercancia.DOCUMENTOS,1),new LineaPedido(TipoMercancia.DOCUMENTOS,1)));
             motor.enviar(order);
             assertTrue(motor.esperarEstado(order.id(),EstadoPedido.ESPERANDO_STOCK,1,TimeUnit.SECONDS));
