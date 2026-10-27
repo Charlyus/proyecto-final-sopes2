@@ -35,6 +35,88 @@ public final class Almacen {
     }
     public long capacidadTotal() { return slots.stream().mapToLong(s -> s.capacity).sum(); }
     public long volumenOcupado() { return slots.stream().mapToLong(s -> s.used).sum(); }
+    public long volumenLibreTotal() { return capacidadTotal() - volumenOcupado(); }
+
+    /** Espacio bruto en ubicaciones vacías o ya asignadas a ese producto. */
+    public long volumenLibreCompatible(Producto product) {
+        Objects.requireNonNull(product);
+        return slots.stream().filter(s -> s.productId == null || s.productId.equals(product.id()))
+                .mapToLong(s -> s.capacity - s.used).sum();
+    }
+
+    /** Unidades enteras que podrían entrar ahora sin mezclar productos entre ubicaciones. */
+    public long unidadesCompatiblesDisponibles(Producto product) {
+        Objects.requireNonNull(product);
+        return slots.stream().filter(s -> s.productId == null || s.productId.equals(product.id()))
+                .mapToLong(s -> (s.capacity - s.used) / product.volumenPorUnidad()).sum();
+    }
+
+    public String motivoSinCapacidadCompatible(Producto product, int cantidad) {
+        long unidades = unidadesCompatiblesDisponibles(product);
+        return "No hay suficientes ubicaciones compatibles para " + product.nombre() + ": caben "
+                + unidades + " de " + cantidad + " unidades; volumen libre total " + volumenLibreTotal()
+                + ", volumen libre compatible " + volumenLibreCompatible(product)
+                + " (" + product.volumenPorUnidad() + " por unidad).";
+    }
+
+    /**
+     * Valida en una copia lógica vacía si existe una asignación de ubicaciones
+     * para todas las necesidades respetando la regla de una sola mercancía por
+     * ubicación. La búsqueda determinista evita depender del orden de las líneas.
+     */
+    public void validarCabeEnAlmacenVacio(Map<String, Producto> productos,
+                                          Map<String, Integer> cantidades) {
+        Objects.requireNonNull(productos); Objects.requireNonNull(cantidades);
+        long volumenTotal = 0;
+        List<Producto> productosPedido = new ArrayList<>();
+        List<Integer> cantidadesPedido = new ArrayList<>();
+        for (var necesidad : new TreeMap<>(cantidades).entrySet()) {
+            Producto producto = productos.get(necesidad.getKey());
+            if (producto == null) throw new IllegalArgumentException("producto fuera del catálogo: " + necesidad.getKey());
+            int cantidad = Objects.requireNonNull(necesidad.getValue());
+            if (cantidad <= 0) throw new IllegalArgumentException("cantidad inválida para " + necesidad.getKey());
+            long volumen = Math.multiplyExact((long) producto.volumenPorUnidad(), cantidad);
+            volumenTotal = Math.addExact(volumenTotal, volumen);
+            productosPedido.add(producto); cantidadesPedido.add(cantidad);
+        }
+        if (volumenTotal > capacidadTotal()) {
+            throw new IllegalArgumentException("el pedido no cabe en el almacén vacío: requiere " + volumenTotal
+                    + " unidades de volumen y la capacidad total es " + capacidadTotal());
+        }
+        Integer[] order = new Integer[slots.size()];
+        for (int i=0; i<order.length; i++) order[i]=i;
+        Arrays.sort(order, Comparator.<Integer>comparingInt(i -> slots.get(i).capacity).reversed().thenComparingInt(i -> i));
+        int[] capacities = Arrays.stream(order).mapToInt(i -> slots.get(i).capacity).toArray();
+        int[] remaining = cantidadesPedido.stream().mapToInt(Integer::intValue).toArray();
+        if (!canAssign(0, capacities, productosPedido, remaining, new HashSet<>())) {
+            String detalle = productosPedido.stream().map(p -> p.nombre() + " × "
+                    + cantidadesPedido.get(productosPedido.indexOf(p))).collect(java.util.stream.Collectors.joining(", "));
+            throw new IllegalArgumentException("el pedido no cabe en el almacén vacío por la regla de una mercancía "
+                    + "por ubicación: " + detalle + "; capacidad total " + capacidadTotal()
+                    + " unidades de volumen");
+        }
+    }
+
+    private static boolean canAssign(int slotIndex, int[] capacities, List<Producto> products,
+                                     int[] remaining, Set<String> failedStates) {
+        if (Arrays.stream(remaining).allMatch(q -> q == 0)) return true;
+        if (slotIndex == capacities.length) return false;
+        String key = slotIndex + ":" + Arrays.toString(remaining);
+        if (failedStates.contains(key)) return false;
+        int capacity = capacities[slotIndex];
+        for (int productIndex=0; productIndex<products.size(); productIndex++) {
+            if (remaining[productIndex] == 0) continue;
+            int units = Math.min(remaining[productIndex], capacity / products.get(productIndex).volumenPorUnidad());
+            if (units == 0) continue;
+            remaining[productIndex] -= units;
+            boolean fits = canAssign(slotIndex+1, capacities, products, remaining, failedStates);
+            remaining[productIndex] += units;
+            if (fits) return true;
+        }
+        if (canAssign(slotIndex+1, capacities, products, remaining, failedStates)) return true;
+        failedStates.add(key);
+        return false;
+    }
 
     /** Reserva capacidad entera de volumen; retorna null si no cabe ahora y no altera nada. */
     public PlanAlmacenamiento planificar(String lotId, Producto product, int quantity) {

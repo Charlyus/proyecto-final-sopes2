@@ -14,6 +14,9 @@ public final class PlanificadorPedidos {
     }
     public <T> T seleccionar(List<Candidato<T>> candidatos, EstrategiaPlanificacion estrategia, long ahoraNanos) {
         if (candidatos.isEmpty()) return null;
+        return ordenar(candidatos, estrategia, ahoraNanos).get(0).valor();
+    }
+    public <T> List<Candidato<T>> ordenar(List<Candidato<T>> candidatos, EstrategiaPlanificacion estrategia, long ahoraNanos) {
         Comparator<Candidato<T>> comparator = switch (estrategia) {
             case PRIORIDAD_ESTRICTA -> Comparator.comparingInt(Candidato<T>::prioridad).reversed()
                     .thenComparingLong(Candidato::orden);
@@ -23,6 +26,9 @@ public final class PlanificadorPedidos {
             case MENOR_CANTIDAD_PRIMERO -> Comparator.comparingInt(Candidato<T>::unidades)
                     .thenComparingLong(Candidato::orden);
         };
-        return candidatos.stream().min(comparator).orElseThrow().valor();
+        return candidatos.stream().sorted(comparator).toList();
+    }
+    public int prioridadEfectiva(Candidato<?> c, long now) {
+        return (int)Math.min(Integer.MAX_VALUE, (long)c.prioridad() + Math.max(0, now-c.llegadaNanos())/intervaloEnvejecimientoNanos);
     }
 }

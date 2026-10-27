@@ -17,6 +17,7 @@ public final class Inventario implements AutoCloseable {
     public record SolicitudReserva(UUID pedidoId, Map<String,Integer> cantidades) {
         public SolicitudReserva { Objects.requireNonNull(pedidoId); cantidades=Map.copyOf(cantidades); }
     }
+    public record DisponibilidadLinea(int solicitadas, int disponibles, int faltantes) { }
     private record ReservaStock(Map<String,Integer> cantidades, boolean consumida) { }
     private final BlockingQueue<SolicitudRecepcion> queue;
     private final Recepcion recepcion;
@@ -42,6 +43,17 @@ public final class Inventario implements AutoCloseable {
     }
     public void alCambiarStock(Runnable listener) { cambioStock=Objects.requireNonNull(listener); }
     public long capacidadTotal() { return almacen.capacidadTotal(); }
+    /** Valida capacidad estructural sin confundirla con la disponibilidad actual de stock. */
+    public void validarCapacidadPedido(gt.redxela.modelo.Pedido pedido) {
+        Objects.requireNonNull(pedido);
+        Map<String,Integer> cantidades = new TreeMap<>();
+        pedido.lineas().forEach(linea -> {
+            if (!productos.containsKey(linea.productoId()))
+                throw new IllegalArgumentException("producto fuera del catálogo: " + linea.productoId());
+            cantidades.merge(linea.productoId(), linea.cantidad(), Math::addExact);
+        });
+        almacen.validarCabeEnAlmacenVacio(productos, cantidades);
+    }
     public void iniciar() {
         if (closed.get()) throw new IllegalStateException("inventario cerrado");
         if (!started.compareAndSet(false,true)) return;
@@ -100,13 +112,19 @@ public final class Inventario implements AutoCloseable {
             SolicitudRecepcion request=pendientesEspacio.get(i);
             Almacen.PlanAlmacenamiento plan=almacen.planificar(request.id().toString(),request.producto(),request.cantidad());
             if (plan == null) {
-                recepcion.actualizar(request.id(),EstadoRecepcion.PENDIENTE_ESPACIO,"Sin capacidad compatible disponible; permanece pendiente");
                 i++; continue;
             }
             almacen.aplicar(plan,request.producto());
             pendientesEspacio.remove(i);
             recepcion.actualizar(request.id(),EstadoRecepcion.APLICADA,"Mercadería ubicada y stock actualizado");
             changed=true;
+        }
+        // Los reintentos se intentan en orden sin bloquear solicitudes posteriores compatibles.
+        // Se actualizan causas al final porque las aplicaciones de esta misma pasada pueden
+        // cambiar tanto el espacio global como el compatible de los pendientes anteriores.
+        for (SolicitudRecepcion request : pendientesEspacio) {
+            recepcion.actualizar(request.id(),EstadoRecepcion.PENDIENTE_ESPACIO,
+                    almacen.motivoSinCapacidadCompatible(request.producto(),request.cantidad()) + " Recepción pendiente.");
         }
         return changed;
     }
@@ -203,6 +221,32 @@ public final class Inventario implements AutoCloseable {
                 return new EstadoStock(p.id(),p.nombre(),qty,reserved,qty-reserved);
             }).toList();
             return new SnapshotInventario(stocks,almacen.ubicaciones(),almacen.lotes(),reservas.size(),pendientesEspacio.size());
+        } finally { lock.unlock(); }
+    }
+
+    /** Disponibilidad coherente para una fila de pedido; suma su propia reserva si ya fue asignada. */
+    public Map<String,DisponibilidadLinea> disponibilidadPedido(UUID pedidoId, Map<String,Integer> necesidades) {
+        Objects.requireNonNull(pedidoId); Objects.requireNonNull(necesidades);
+        lock.lock();
+        try {
+            Map<String,Integer> physical=almacen.stockPorProducto();
+            ReservaStock own=reservas.get(pedidoId);
+            Map<String,DisponibilidadLinea> result=new LinkedHashMap<>();
+            new TreeMap<>(necesidades).forEach((productId, requested) -> {
+                if (!productos.containsKey(productId) || requested == null || requested <= 0)
+                    throw new IllegalArgumentException("necesidad inválida para " + productId);
+                int available;
+                if (ordenesConsumidas.contains(pedidoId)) available=requested;
+                else {
+                    int totalReserved=reservas.values().stream()
+                            .mapToInt(reservation -> reservation.cantidades().getOrDefault(productId,0)).sum();
+                    int ownReserved=own == null ? 0 : own.cantidades().getOrDefault(productId,0);
+                    available=Math.max(0, physical.getOrDefault(productId,0)-totalReserved+ownReserved);
+                }
+                int visible=Math.min(requested,available);
+                result.put(productId,new DisponibilidadLinea(requested,visible,requested-visible));
+            });
+            return Collections.unmodifiableMap(result);
         } finally { lock.unlock(); }
     }
     public boolean consumidorTerminado() { return consumer==null || !consumer.isAlive(); }

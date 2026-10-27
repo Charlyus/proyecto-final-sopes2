@@ -13,10 +13,10 @@ import java.util.concurrent.locks.ReentrantLock;
 /** Motor en memoria. El lock protege solamente despacho/estados; nunca cubre la duración del trabajo. */
 public final class MotorSimulacion implements AutoCloseable {
     private static final class RuntimeOrder {
-        final Pedido pedido; final long arrival; final long order;
+        final Pedido pedido; final long arrival; final long order; final OrigenPedido origen;
         EstadoPedido state = EstadoPedido.ESPERANDO_STOCK; Long started; Long finished;
         Thread worker; boolean consumed; String error;
-        RuntimeOrder(Pedido p, long arrival, long order) { pedido=p; this.arrival=arrival; this.order=order; }
+        RuntimeOrder(Pedido p, long arrival, long order, OrigenPedido origen) { pedido=p; this.arrival=arrival; this.order=order; this.origen=origen; }
     }
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition changed = lock.newCondition();
@@ -66,7 +66,12 @@ public final class MotorSimulacion implements AutoCloseable {
     }
 
     public void enviar(Pedido pedido) {
+        enviar(pedido, OrigenPedido.MANUAL);
+    }
+
+    public void enviar(Pedido pedido, OrigenPedido origen) {
         Objects.requireNonNull(pedido);
+        Objects.requireNonNull(origen);
         Map<TipoRecurso,Integer> needs = NecesidadesPedido.calcular(pedido);
         // Se valida al ingresar, antes de encolar una solicitud imposible.
         needs.forEach((type,count) -> { if(count > type.capacidad()) throw new IllegalArgumentException("pedido supera capacidad: " + type); });
@@ -74,7 +79,10 @@ public final class MotorSimulacion implements AutoCloseable {
         try {
             if (!running || closing) throw new IllegalStateException("motor no acepta pedidos");
             if (orders.containsKey(pedido.id())) throw new IllegalArgumentException("id de pedido duplicado");
-            RuntimeOrder runtime = new RuntimeOrder(pedido, System.nanoTime(), sequence++);
+            // La validación estructural cubre también los pedidos automáticos porque todos
+            // entran por esta API; la falta temporal de stock sigue siendo una espera válida.
+            inventario.validarCapacidadPedido(pedido);
+            RuntimeOrder runtime = new RuntimeOrder(pedido, System.nanoTime(), sequence++, origen);
             orders.put(pedido.id(), runtime); pending.add(runtime);
             reevaluarStockLocked(System.nanoTime()); changed.signalAll();
         } finally { lock.unlock(); }
@@ -260,7 +268,7 @@ public final class MotorSimulacion implements AutoCloseable {
                     long elapsed = now - o.started; progress = Math.min(1.0, (double)elapsed/total);
                     remaining = TimeUnit.NANOSECONDS.toMillis(Math.max(0, total-elapsed));
                 }
-                return new EstadoPedidoMotor(o.pedido, o.state, o.arrival, o.started, o.finished, progress, remaining);
+                return new EstadoPedidoMotor(o.pedido, o.state, o.arrival, o.started, o.finished, progress, remaining, o.origen);
             }).toList();
             Map<TipoRecurso, GestorRecursos.EstadoRecurso> resources = resourceManager.snapshot();
             EnumMap<TipoRecurso,Double> utilization = new EnumMap<>(TipoRecurso.class);
@@ -286,7 +294,11 @@ public final class MotorSimulacion implements AutoCloseable {
                     waitSamples==0?0:(double)waitNanos/waitSamples/1_000_000,
                     processingSamples==0?0:(double)processingNanos/processingSamples/1_000_000,
                     resources, utilization);
-            return new SnapshotMotor(orderSnapshots, stats, running && !closing);
+            List<RuntimeOrder> ready = pending.stream().filter(o -> o.state == EstadoPedido.RECIBIDO).toList();
+            List<EntradaPlanificacion> queueView = planner.ordenar(ready.stream().map(this::candidate).toList(), strategy, now)
+                    .stream().map(c -> new EntradaPlanificacion(c.valor().pedido.id(),
+                            planner.prioridadEfectiva(c, now), c.unidades(), TimeUnit.NANOSECONDS.toMillis(Math.max(0, now-c.llegadaNanos())))).toList();
+            return new SnapshotMotor(orderSnapshots, stats, running && !closing, strategy, queueView, now);
         } finally { lock.unlock(); }
     }
 
