@@ -14,6 +14,7 @@ public final class Recepcion implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Map<UUID, EstadoRecepcionVista> records = new LinkedHashMap<>();
     private final Set<UUID> solicitudesSinFinalizar = new HashSet<>();
+    private boolean demonstrationPaused;
 
     public Recepcion(BlockingQueue<SolicitudRecepcion> queue, long capacidadTotal) {
         this.queue=Objects.requireNonNull(queue);
@@ -32,6 +33,8 @@ public final class Recepcion implements AutoCloseable {
         long volumen=Math.multiplyExact((long)producto.volumenPorUnidad(), cantidad);
         if (volumen > capacidadTotal) {
             estado=EstadoRecepcion.RECHAZADA; motivo="Excede la capacidad total del almacén";
+        } else if (demonstrationPaused) {
+            estado=EstadoRecepcion.RECHAZADA; motivo="Recepción temporalmente pausada por demostración de conflictos";
         } else if (closed.get()) {
             estado=EstadoRecepcion.RECHAZADA; motivo="Recepción cerrada";
         }
@@ -64,6 +67,19 @@ public final class Recepcion implements AutoCloseable {
     }
     public synchronized List<EstadoRecepcionVista> snapshot() { return List.copyOf(records.values()); }
     public synchronized EstadoRecepcionVista estado(UUID id) { return records.get(id); }
+
+    /** Pausa atómica del productor; no bloquea el EDT ni toca solicitudes ya aceptadas. */
+    public synchronized PausaDemostracion pausarParaDemostracion() {
+        if (closed.get()) throw new IllegalStateException("Recepción cerrada");
+        if (demonstrationPaused) throw new IllegalStateException("Recepción ya pausada");
+        demonstrationPaused = true;
+        return new PausaDemostracion();
+    }
+    public final class PausaDemostracion implements AutoCloseable {
+        private boolean released;
+        private PausaDemostracion() { }
+        @Override public void close() { synchronized (Recepcion.this) { if (!released) { demonstrationPaused=false; released=true; } } }
+    }
     public synchronized EstadoRecepcionVista esperarEstado(UUID id, EstadoRecepcion esperado, long timeout,
                                                             java.util.concurrent.TimeUnit unit) throws InterruptedException {
         long deadline=System.nanoTime()+unit.toNanos(timeout);

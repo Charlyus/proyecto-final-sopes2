@@ -53,7 +53,7 @@ interfaz usa `mvn javafx:run`.
    muestran stock, ubicaciones, recepciones, recursos y estadísticas.
 
 La interfaz JavaFX tiene un menú lateral para **Panel general**, **Pedidos**,
-**Recepción**, **Almacén** y **Clientes**. Las páginas usan scroll vertical para
+**Recepción**, **Almacén**, **Clientes** y **Conflictos**. Las páginas usan scroll vertical para
 mantener accesibles los formularios y tablas en ventanas menores. El panel
 general incluye indicadores, medias de espera y procesamiento y barras de
 ocupación actual por recurso; Almacén muestra también su utilización acumulada.
@@ -178,11 +178,52 @@ mientras la aplicación siga activa y la máquina tenga recursos suficientes;
 no hay un límite prefijado de cantidad, pero el historial en memoria aumenta
 con cada pedido.
 
+## Demostración deliberada de deadlock
+
+1. Inicia el motor y espera a que no haya pedidos en espera de recursos ni en
+   procesamiento. Los pedidos aceptados que todavía esperan stock o despacho
+   permanecen en sus colas.
+2. Detén el generador y espera el estado **Detenido**. En **Conflictos**, pulsa
+   **Provocar conflicto**. El sistema pausa coordinadamente los despachos y las
+   nuevas recepciones; si hay trabajo operativo activo, informa el motivo y no
+   inicia el escenario.
+3. La Operación A (inspección) retiene el escáner y solicita un montacargas.
+   La Operación B (preparación) retiene los tres permisos reales del recurso
+   montacargas y solicita el escáner. Ambos usan los `Semaphore` y el registro
+   propietario de `GestorRecursos`. Una barrera garantiza que cada operación
+   tenga su primer recurso antes de pedir el segundo. Así, aunque existen tres
+   montacargas, A no puede obtener ninguno mientras B los retiene todos.
+4. El sistema declara deadlock solo cuando el grafo real de espera contiene
+   `Operación A → Operación B → Operación A`. Un recurso ocupado sin ciclo no
+   se considera deadlock. Las tarjetas muestran retenciones, solicitud y
+   propietario esperado.
+5. Pulsa **Continuar A** o **Continuar B**. La operación desplazada se
+   interrumpe y libera sus propios recursos mediante `finally`. El coordinador
+   confirma que terminó de liberar antes de dejar avanzar a la elegida. Luego
+   la desplazada queda visible en espera y reintenta usando el orden global
+   seguro. **Cancelar demostración** interrumpe ambas operaciones y espera la
+   limpieza antes de restaurar los componentes normales.
+
+El ejercicio ilustra las cuatro condiciones de Coffman:
+
+- **Exclusión mutua:** el escáner tiene capacidad uno; B ocupa los tres
+  permisos de montacargas.
+- **Retener y esperar:** A conserva el escáner mientras pide montacargas; B
+  conserva montacargas mientras pide el escáner.
+- **No expropiación:** el administrador no retira permisos de forma arbitraria.
+  La resolución interrumpe una operación y esta libera lo propio al salir.
+- **Espera circular:** A espera recursos de B y B espera el escáner de A.
+
+El escenario no produce efectos de inventario: no reserva, consume, mueve ni
+repone stock. Las solicitudes de recepción ya aceptadas se conservan; durante
+la pausa, nuevas recepciones se rechazan explícitamente. La demostración solo
+comienza con recursos libres, sin pedidos despachados y con el generador
+detenido.
+
 ## Limitaciones actuales
 
 Todo el estado desaparece al cerrar el proceso. No se implementan persistencia,
-generación automática de stock, deadlock deliberado y resolución manual,
-comparación de ejecuciones entre políticas ni manuales finales. El catálogo es
+generación automática de stock, comparación de ejecuciones entre políticas ni manuales finales. El catálogo es
 fijo y solo se pueden seleccionar sus productos. Los pedidos automáticos
 pueden crecer sin límite de negocio, pero están condicionados por el tiempo y
 la memoria disponibles en la máquina.

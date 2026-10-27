@@ -46,6 +46,7 @@ public final class RedXelaController {
     private final Inventario inventory = new Inventario(receiptQueue, reception, warehouse, resources);
     private final MotorSimulacion motor = new MotorSimulacion(3, new TiempoSimulado(250),
             EstrategiaPlanificacion.PRIORIDAD_ESTRICTA, 10_000, resources);
+    private final DemostracionDeadlock conflictDemo = new DemostracionDeadlock(resources, motor, reception, 500);
     private final GeneradorPedidos generator;
     private final ExecutorService background = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "redxela-ui-tareas"); t.setDaemon(false); return t;
@@ -87,6 +88,18 @@ public final class RedXelaController {
     private Label warehouseCapacitySummary;
     private Label motorStatusIndicator;
     private Button motorStartButton;
+    private Button generatorStartButton;
+    private Button generatorStopButton;
+    private Button conflictStartButton;
+    private Button continueAButton;
+    private Button continueBButton;
+    private Button conflictCancelButton;
+    private Label conflictState;
+    private Label conflictCycle;
+    private Label operationAView;
+    private Label operationBView;
+    private TextArea conflictEvents;
+    private final AtomicBoolean conflictLaunching = new AtomicBoolean();
     private Timeline refreshTimeline;
     private Stage stage;
     private boolean demoLoaded;
@@ -119,6 +132,7 @@ public final class RedXelaController {
         buildNavigation();
         pages.put("Panel general", dashboardPage()); pages.put("Pedidos", ordersPage());
         pages.put("Recepción", receptionPage()); pages.put("Almacén", warehousePage()); pages.put("Clientes", clientsPage());
+        pages.put("Conflictos", conflictsPage());
         orderClient.valueProperty().addListener((obs, old, value) -> { if (value != null) orderService.setValue(value.nivelServicio()); });
         orderPolicy.valueProperty().addListener((obs, old, value) -> { if (value != null) policy.setValue(value); });
         showPage("Panel general");
@@ -139,7 +153,7 @@ public final class RedXelaController {
     }
 
     private void buildNavigation() {
-        for (String name : List.of("Panel general", "Pedidos", "Recepción", "Almacén", "Clientes")) {
+        for (String name : List.of("Panel general", "Pedidos", "Recepción", "Almacén", "Clientes", "Conflictos")) {
             Button button = new Button(name);
             button.getStyleClass().add("nav-button"); button.setMaxWidth(Double.MAX_VALUE);
             button.setOnAction(event -> showPage(name)); navigation.getChildren().add(button);
@@ -214,6 +228,7 @@ public final class RedXelaController {
                 labeled("Unidades máx.", unitsMax), labeled("Semilla", seed));
         Button startButton = button("Iniciar generador", "primary", () -> { });
         Button stopButton = button("Detener", "danger", () -> { });
+        generatorStartButton=startButton; generatorStopButton=stopButton;
         startButton.setOnAction(event -> startGenerator(startButton, stopButton));
         stopButton.setOnAction(event -> stopGenerator(startButton, stopButton));
         FlowPane controls = new FlowPane(10, 8, startButton, stopButton, generatorStatus, generatorCount);
@@ -245,6 +260,67 @@ public final class RedXelaController {
                 button("Actualizar cuenta seleccionada", "secondary", this::updateSelectedClient));
         return page("Clientes", "Cuentas temporales en memoria y selección para nuevos pedidos.", registerCard,
                 card("Cuentas registradas", clientTable, update));
+    }
+
+    private Node conflictsPage() {
+        conflictState=label("Demostración detenida", "generator-stopped");
+        conflictCycle=label("El ciclo aparecerá cuando ambas operaciones esperen recursos retenidos por la otra.", "queue-note");
+        operationAView=label("Operación A · Inspección: Escáner → Montacargas\nSin recursos retenidos", "conflict-operation");
+        operationBView=label("Operación B · Preparación: Montacargas (3/3) → Escáner\nSin recursos retenidos", "conflict-operation");
+        conflictEvents=new TextArea(); conflictEvents.setEditable(false); conflictEvents.setWrapText(true); conflictEvents.setPrefRowCount(7);
+        conflictStartButton=button("Provocar conflicto", "danger", this::startConflict);
+        continueAButton=button("Continuar A", "primary", () -> resolveConflict(DemostracionDeadlock.Operacion.A));
+        continueBButton=button("Continuar B", "primary", () -> resolveConflict(DemostracionDeadlock.Operacion.B));
+        conflictCancelButton=button("Cancelar demostración", "secondary", this::cancelConflict);
+        continueAButton.setDisable(true); continueBButton.setDisable(true); conflictCancelButton.setDisable(true);
+        HBox cards=new HBox(14,card("Operación A",operationAView),card("Operación B",operationBView));
+        HBox.setHgrow(cards.getChildren().get(0),Priority.ALWAYS); HBox.setHgrow(cards.getChildren().get(1),Priority.ALWAYS);
+        return page("Conflictos", "Escenario educativo aislado con recursos reales del administrador. Requiere generador detenido y motor sin trabajo operativo en curso.",
+                card("Control", conflictState,new FlowPane(9,9,conflictStartButton,continueAButton,continueBButton,conflictCancelButton)),
+                cards, card("Ciclo de espera", conflictCycle,
+                        label("A conserva el escáner y espera montacargas. B conserva los tres permisos de montacargas y espera el escáner. La resolución interrumpe una operación; ella misma libera lo retenido en finally.","helper-text")),
+                card("Eventos", conflictEvents));
+    }
+
+    private void startConflict() {
+        if(generator.activo() || !generator.terminado()) { setFooter("Detén el generador y espera que termine antes de provocar el conflicto"); return; }
+        if(!conflictLaunching.compareAndSet(false,true)) return;
+        if(conflictStartButton!=null) conflictStartButton.setDisable(true);
+        if(generatorStartButton!=null) generatorStartButton.setDisable(true);
+        runBackground("Iniciando demostración de conflicto", () -> { ensureMotor(); conflictDemo.iniciar(); }, () -> {
+            conflictLaunching.set(false); setFooter("Preparando escenario aislado de deadlock"); refreshConflictView();
+        });
+    }
+    private void resolveConflict(DemostracionDeadlock.Operacion operation) {
+        boolean accepted=conflictDemo.resolver(operation);
+        setFooter(accepted?"Resolución aceptada · esperando liberación confirmada":"El conflicto ya cambió o fue resuelto");
+        refreshConflictView();
+    }
+    private void cancelConflict() { conflictDemo.cancelar(); setFooter("Cancelación solicitada; la limpieza ocurre fuera del hilo JavaFX"); refreshConflictView(); }
+    private void refreshConflictView() {
+        if(conflictState==null) return;
+        DemostracionDeadlock.Snapshot snapshot=conflictDemo.snapshot();
+        conflictState.setText(snapshot.estado().name().replace('_',' ') + (snapshot.activo()?" · MODO AISLADO ACTIVO":"")
+                + (snapshot.error().isBlank()?"":" · "+snapshot.error()));
+        conflictState.getStyleClass().setAll(snapshot.deadlockConfirmado()?"conflict-state-bad":snapshot.activo()?"conflict-state-active":"generator-stopped");
+        conflictCycle.setText(snapshot.deadlockConfirmado()?String.join("  →  ",snapshot.ciclo()):
+                "Deadlock confirmado: "+snapshot.deadlockConfirmado()+". Un recurso ocupado sin ciclo no cuenta como deadlock.");
+        if(snapshot.operaciones().size()>=2) {
+            operationAView.setText(formatOperation(snapshot.operaciones().get(0)));
+            operationBView.setText(formatOperation(snapshot.operaciones().get(1)));
+        }
+        conflictEvents.setText(String.join("\n",snapshot.eventos())); conflictEvents.positionCaret(conflictEvents.getLength());
+        boolean canResolve=snapshot.estado()==DemostracionDeadlock.Estado.CONFLICTO_CONFIRMADO;
+        continueAButton.setDisable(!canResolve); continueBButton.setDisable(!canResolve);
+        conflictCancelButton.setDisable(!snapshot.activo());
+        conflictStartButton.setDisable(snapshot.activo()||conflictLaunching.get()||!generator.terminado());
+        if(generatorStartButton!=null) generatorStartButton.setDisable(snapshot.activo()||conflictLaunching.get());
+    }
+    private static String formatOperation(DemostracionDeadlock.VistaOperacion op) {
+        String held=op.retenidos().isEmpty()?"ninguno":op.retenidos().entrySet().stream().map(e->e.getKey()+" × "+e.getValue()).reduce((a,b)->a+", "+b).orElse("ninguno");
+        return "Operación "+op.id()+" · "+op.proposito()+"\nEstado: "+op.estado()+"\nRetiene: "+held+
+                "\nSolicita: "+(op.solicitado()==null?"—":op.solicitado()+" × "+op.unidadesSolicitadas())+
+                (op.propietariosEsperados().isEmpty()?"":"\nPropietario esperado: "+String.join(", ",op.propietariosEsperados()));
     }
 
     private void startMotor() {
@@ -404,6 +480,8 @@ public final class RedXelaController {
         else if (!generator.terminado()) { generatorStatus.setText("Deteniendo…"); generatorStatus.getStyleClass().setAll("status-wait"); }
         else { generatorStatus.setText("Detenido"); generatorStatus.getStyleClass().setAll("generator-stopped"); }
         generatorCount.setText(generator.aceptados() + " pedidos automáticos · " + levelCounts(generator.distribucion()));
+        if(generatorStartButton!=null) generatorStartButton.setDisable(conflictDemo.snapshot().activo()||conflictLaunching.get());
+        refreshConflictView();
         if (metrics.containsKey("En cola")) {
             EstadisticasMotor stat = work.estadisticas();
             metrics.get("En cola").setText(Integer.toString(stat.pendientes()));
@@ -504,7 +582,7 @@ public final class RedXelaController {
     private TableView<ResourceRow> resourceTable() {
         TableView<ResourceRow> table = new TableView<>();
         table.getColumns().setAll(column("Recurso", row -> row.tipo().etiqueta(), .3), column("Capacidad", row -> Integer.toString(row.state().capacidad()), .14),
-                column("Disponibles", row -> Integer.toString(row.state().disponibles()), .14), column("Operaciones propietarias", row -> Integer.toString(row.state().operacionesPropietarias().size()), .2),
+                column("Disponibles", row -> Integer.toString(row.state().disponibles()), .14), column("Operaciones propietarias", row -> row.state().operacionesPropietarias().isEmpty()?"—":row.state().operacionesPropietarias().entrySet().stream().map(e->e.getKey()+" × "+e.getValue()).reduce((a,b)->a+"; "+b).orElse("—"), .2),
                 column("Utilización acumulada", row -> String.format(Locale.ROOT,"%.1f%%",row.utilization()*100), .22));
         table.setPrefHeight(300); return table;
     }
@@ -630,7 +708,7 @@ public final class RedXelaController {
             try { generator.close(); }
             catch (RuntimeException e) { Platform.runLater(() -> setFooter("Error al cerrar generador: " + message(e))); }
             finally {
-                try { motor.close(); }
+                try { reception.close(); inventory.close(); conflictDemo.close(); motor.close(); }
                 catch (RuntimeException e) { Platform.runLater(() -> setFooter("Error al cerrar motor: " + message(e))); }
                 if (interrupted) Thread.currentThread().interrupt();
                 Platform.runLater(() -> { allowClose = true; stage.close(); });
